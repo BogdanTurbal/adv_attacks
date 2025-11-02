@@ -1,0 +1,84 @@
+# Configuration for Reprompting Attacks
+# This config focuses on reprompting-based adversarial attacks
+
+global:
+  netid: "bt4811"
+  scratch_dir: "/scratch/gpfs/KOROLOVA"
+  home_dir: "/scratch/gpfs/KOROLOVA/bt4811/usefatt/reasoning_attacks_res"
+  project_dir: "/scratch/gpfs/KOROLOVA/bt4811/usefatt"
+  email: "bogdan.turbal.y@gmail.com"
+  
+  environment:
+    conda_env: "reasoning_env"
+    modules:
+      - "anaconda3/2025.6"
+      - "cuda/12.4"
+    
+    huggingface:
+      cache_dir: "/scratch/gpfs/KOROLOVA/huggingface"
+      offline_mode: true
+    
+    wandb:
+      entity: "bogdan-turbal-y"
+      offline_mode: true
+
+slurm_defaults:
+  nodes: 1
+  ntasks: 4
+  cpus_per_task: 8
+  mem: "128G"
+  time: "06:00:00"
+  gres: "gpu:4"
+  constraint: "gpu80"
+  mail_type: "ALL"
+
+models:
+  deepseek_r1:
+    name: "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
+    dtype: "bfloat16"
+  
+  attacker_mixtral:
+    name: "mistralai/Mixtral-8x7B-Instruct-v0.1"
+    dtype: "bfloat16"
+
+datasets:
+  cot150:
+    input_csv: "reasoning_attacks/dataset/orthogonalized_outputs_cot150_2048.csv"
+
+subexperiments:
+  reprompting_base:
+    description: "Reprompting attack with default settings"
+    results_dir: "reprompting_base"
+    model: "deepseek_r1"
+    attacker_model: "attacker_mixtral"
+    dataset: "cot150"
+    
+    experiment:
+      num_iters: 15  # number of iterations for refinement
+      num_branches: 8  # number of generated children from each reasoning string
+      memory: 32  # buffer size for the search method
+      K: 2  # bucket size for adding randomness to the feedbacks
+      batch_size: 16
+      max_examples: -1
+      verbose: true
+      num_gpus: 4  # Number of GPUs to use for parallel processing
+      attacker_quantize: true  # Enable quantization for attacker model
+      attacker_quantize_bits: 4  # 4 or 8 bit quantization
+      attacker_use_flash_attention: true  # Enable Flash Attention 2 for attacker model
+    
+    parallel:
+      num_jobs: 16
+      range_type: "percentage"
+      range_spec: "0.0:0.5"
+    
+    slurm:
+      time: "00:30:00"
+      gres: "gpu:4"
+      nodes: 1
+      ntasks: 4
+      cpus_per_task: 4
+      mem: "128G"
+      constraint: "gpu80"
+    
+    wandb_project: "reprompting_attacks"
+

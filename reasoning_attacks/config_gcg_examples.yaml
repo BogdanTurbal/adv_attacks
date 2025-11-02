@@ -1,0 +1,125 @@
+# Example Configuration for GCG Experiments
+# This config focuses on GCG-style attacks with different step counts
+
+global:
+  netid: "bt4811"
+  scratch_dir: "/scratch/gpfs/KOROLOVA"
+  home_dir: "/scratch/gpfs/KOROLOVA/bt4811/reasoning_attacks_res"
+  project_dir: "/scratch/gpfs/KOROLOVA/bt4811/reasoning_attacks_res"
+  email: "bogdan.turbal.y@gmail.com"
+  
+  environment:
+    conda_env: "reasoning_env"
+    modules:
+      - "anaconda3/2025.6"
+      - "cuda/12.4"
+    
+    huggingface:
+      cache_dir: "/scratch/gpfs/KOROLOVA/huggingface"
+      offline_mode: true
+    
+    wandb:
+      entity: "bogdan-turbal-y"
+      offline_mode: true
+
+slurm_defaults:
+  nodes: 1
+  ntasks: 4
+  cpus_per_task: 8
+  mem: "128G"
+  time: "3:00:00"
+  gres: "gpu:4"
+  constraint: "gpu80"
+  mail_type: "ALL"
+
+models:
+  deepseek_r1:
+    name: "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
+    dtype: "bfloat16"
+
+datasets:
+  harmful_prompts:
+    input_csv: "all_harmful_prompts_cot1_out1.csv"
+
+subexperiments:
+  gcg_short:
+    description: "GCG attack - short run (50 steps)"
+    results_dir: "results_gcg_short"
+    model: "deepseek_r1"
+    dataset: "harmful_prompts"
+    
+    experiment:
+      beta: 0.0
+      num_steps: 50
+      num_target_tokens: 20
+      num_refusal_tokens: 20
+      num_gpus: 4
+      runs_per_gpu: 1
+      max_examples: -1
+      target_override: true
+      verbose: true
+    
+    parallel:
+      num_jobs: 2
+      range_type: "percentage"
+      range_spec: "0.0:1.0"
+    
+    slurm:
+      time: "2:00:00"
+    
+    wandb_project: "gcg_attacks"
+
+  gcg_long:
+    description: "GCG attack - long run (150 steps)"
+    results_dir: "results_gcg_long"
+    model: "deepseek_r1"
+    dataset: "harmful_prompts"
+    
+    experiment:
+      beta: 0.0
+      num_steps: 150
+      num_target_tokens: 20
+      num_refusal_tokens: 20
+      num_gpus: 4
+      runs_per_gpu: 1
+      max_examples: -1
+      target_override: true
+      verbose: true
+    
+    parallel:
+      num_jobs: 2
+      range_type: "percentage"
+      range_spec: "0.0:1.0"
+    
+    slurm:
+      time: "6:00:00"
+    
+    wandb_project: "gcg_attacks"
+
+  gcg_subset:
+    description: "GCG attack on subset of examples"
+    results_dir: "results_gcg_subset"
+    model: "deepseek_r1"
+    dataset: "harmful_prompts"
+    
+    experiment:
+      beta: 0.0
+      num_steps: 100
+      num_target_tokens: 20
+      num_refusal_tokens: 20
+      num_gpus: 2
+      runs_per_gpu: 1
+      max_examples: -1
+      target_override: true
+      verbose: true
+    
+    parallel:
+      num_jobs: 3
+      range_type: "integer"
+      range_spec: "0:300"
+    
+    slurm:
+      time: "4:00:00"
+      gres: "gpu:2"
+    
+    wandb_project: "gcg_attacks"

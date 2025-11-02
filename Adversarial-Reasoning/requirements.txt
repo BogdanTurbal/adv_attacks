@@ -1,0 +1,34 @@
+# Requirements for Adversarial-Reasoning reprompting attacks
+# Based on imports from perc.ipynb and related code files
+
+# Core ML libraries
+torch
+torchvision
+transformers
+numpy
+
+# Quantization (for attacker model)
+bitsandbytes
+
+# Data handling
+pandas
+
+# Model and conversation templates
+fastchat
+
+# API clients (for TogetherAI, OpenAI, etc.)
+litellm
+requests
+
+# Math/data types
+ml-dtypes
+
+# Progress bars
+tqdm
+
+# Experiment tracking
+wandb
+
+# Optional: GraySwan API client (if using GraySwan API)
+# gray-swan
+

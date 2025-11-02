@@ -1,0 +1,331 @@
+# Unified Experiment Configuration
+# This file defines all experiment parameters and subexperiments
+
+# Global settings applied to all experiments
+global:
+  netid: "bt4811"
+  scratch_dir: "/scratch/gpfs/KOROLOVA"
+  home_dir: "/scratch/gpfs/KOROLOVA/bt4811/usefatt/reasoning_attacks_res"
+  project_dir: "/scratch/gpfs/KOROLOVA/bt4811/usefatt"
+  email: "bogdan.turbal.y@gmail.com"
+  
+  # Environment settings
+  environment:
+    conda_env: "reasoning_env"
+    modules:
+      - "anaconda3/2025.6"
+      - "cuda/12.4"
+    
+    # HuggingFace settings
+    huggingface:
+      cache_dir: "/scratch/gpfs/KOROLOVA/huggingface"
+      offline_mode: true
+    
+    # WandB settings
+    wandb:
+      entity: "bogdan-turbal-y"
+      offline_mode: true
+
+# SLURM default settings
+slurm_defaults:
+  nodes: 1
+  ntasks: 4
+  cpus_per_task: 3
+  mem: "128G"
+  time: "8:00:00"
+  gres: "gpu:4"
+  constraint: "gpu80"
+  mail_type: "ALL"
+
+# Model configurations
+models:
+  deepseek_r1:
+    name: "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
+    dtype: "bfloat16"
+  
+  mistral_7b:
+    name: "mistralai/Mistral-7B-Instruct-v0.2"
+    dtype: "bfloat16"
+
+# Dataset configurations
+datasets:
+  cot150:
+    input_csv: "reasoning_attacks/dataset/orthogonalized_outputs_cot150_2048.csv"
+  
+  harmful_prompts:
+    input_csv: "reasoning_attacks/all_harmful_prompts_cot1_out1.csv"
+  
+  eval_refusal:
+    input_csv: "reasoning_attacks/test_refusal_0.05_cot.csv"
+
+# Subexperiments - each defines a complete experiment setup
+subexperiments:
+  ort_v3_14f_test:
+    description: "Orthogonalized attack with beta=0.5, 100 steps, m=40, memory efficient"
+    results_dir: "results_ort_v3_14f"
+    model: "deepseek_r1"
+    dataset: "cot150"
+    
+    # Experiment parameters
+    experiment:
+      beta: 0.5
+      num_steps: 100
+      num_target_tokens: 20
+      num_refusal_tokens: 40
+      num_gpus: 4
+      runs_per_gpu: 1
+      max_examples: -1
+      target_override: false
+      verbose: true
+    # Parallel job settings
+    parallel:
+      num_jobs: 1
+      range_type: "percentage"  # or "integer"
+      range_spec: "0.0:1.0"
+    
+    # SLURM overrides (optional)
+    slurm:
+      time: "01:00:00"
+      gres: "gpu:4"
+
+    wandb_project: "attor"
+
+  ort_v3_13f_test:
+    description: "Orthogonalized attack with beta=0.5, 100 steps, m=40, memory efficient"
+    results_dir: "results_ort_v3_13f"
+    model: "deepseek_r1"
+    dataset: "cot150"
+    
+    # Experiment parameters
+    experiment:
+      beta: 0.5
+      num_steps: 100
+      num_target_tokens: 20
+      num_refusal_tokens: 40
+      num_gpus: 4
+      runs_per_gpu: 1
+      max_examples: -1
+      target_override: false
+      verbose: true
+    # Parallel job settings
+    parallel:
+      num_jobs: 1
+      range_type: "percentage"  # or "integer"
+      range_spec: "0.0:1.0"
+    
+    # SLURM overrides (optional)
+    slurm:
+      time: "01:00:00"
+      gres: "gpu:4"
+
+    wandb_project: "attor"
+
+  ort_v3_8f:
+    description: "Orthogonalized attack with beta=0.5, 100 steps, m=40, memory efficient"
+    results_dir: "results_ort_v3_8f"
+    model: "deepseek_r1"
+    dataset: "cot150"
+    
+    # Experiment parameters
+    experiment:
+      beta: 0.5
+      num_steps: 100
+      num_target_tokens: 20
+      num_refusal_tokens: 40
+      num_gpus: 4
+      runs_per_gpu: 1
+      max_examples: -1
+      target_override: false
+      verbose: true
+    
+    # Parallel job settings
+    parallel:
+      num_jobs: 2
+      range_type: "percentage"  # or "integer"
+      range_spec: "0.0:1.0"
+    
+    # SLURM overrides (optional)
+    slurm:
+      time: "06:00:00"
+      gres: "gpu:4"
+
+    wandb_project: "attor"
+
+  ort_v3_7f:
+    description: "Orthogonalized attack with beta=0.5, 100 steps, m=25"
+    results_dir: "results_ort_v3_7f"
+    model: "deepseek_r1"
+    dataset: "cot150"
+    
+    # Experiment parameters
+    experiment:
+      beta: 0.5
+      num_steps: 50
+      num_target_tokens: 20
+      num_refusal_tokens: 30
+      num_gpus: 4
+      runs_per_gpu: 1
+      max_examples: -1
+      target_override: false
+      verbose: true
+    
+    # Parallel job settings
+    parallel:
+      num_jobs: 2
+      range_type: "percentage"  # or "integer"
+      range_spec: "0.0:1.0"
+    
+    # SLURM overrides (optional)
+    slurm:
+      time: "06:00:00"
+      gres: "gpu:4"
+
+    wandb_project: "attor"
+
+  ort_v3_6f:
+    description: "Orthogonalized attack with beta=0.5, 100 steps, m=25"
+    results_dir: "results_ort_v3_6f"
+    model: "deepseek_r1"
+    dataset: "cot150"
+    
+    # Experiment parameters
+    experiment:
+      beta: 0.5
+      num_steps: 100
+      num_target_tokens: 20
+      num_refusal_tokens: 40
+      num_gpus: 4
+      runs_per_gpu: 1
+      max_examples: -1
+      target_override: false
+      verbose: true
+    
+    # Parallel job settings
+    parallel:
+      num_jobs: 2
+      range_type: "percentage"  # or "integer"
+      range_spec: "0.0:1.0"
+    
+    # SLURM overrides (optional)
+    slurm:
+      time: "12:20:00"
+      gres: "gpu:4"
+
+    wandb_project: "attor"
+    
+  ort_v3_6fe:
+    description: "Orthogonalized attack with beta=0.5, 100 steps, m=25"
+    results_dir: "results_ort_v3_6fe"
+    model: "deepseek_r1"
+    dataset: "cot150"
+    
+    # Experiment parameters
+    experiment:
+      beta: 0.5
+      num_steps: 100
+      num_target_tokens: 20
+      num_refusal_tokens: 40
+      num_gpus: 4
+      runs_per_gpu: 1
+      max_examples: -1
+      target_override: false
+      verbose: true
+    
+    # Parallel job settings
+    parallel:
+      num_jobs: 4
+      range_type: "percentage"  # or "integer"
+      range_spec: "0.0:1.0"
+    
+    # SLURM overrides (optional)
+    slurm:
+      time: "00:20:00"
+      gres: "gpu:1"
+      ntasks: 1
+      constraint: "gpu80"
+    # WandB project
+    wandb_project: "attor"
+
+  gcg_base:
+    description: "GCG attack with beta=0.0, 50 steps (short)"
+    results_dir: "results_gcg_base"
+    model: "deepseek_r1"
+    dataset: "harmful_prompts"
+    
+    experiment:
+      beta: 0.0
+      num_steps: 150
+      num_target_tokens: 20
+      num_refusal_tokens: 45
+      num_gpus: 4
+      runs_per_gpu: 1
+      max_examples: -1
+      target_override: true
+      verbose: true
+    
+    parallel:
+      num_jobs: 2
+      range_type: "percentage"
+      range_spec: "0.0:1.0"
+    
+    slurm:
+      time: "6:00:00"
+      gres: "gpu:4"
+    
+    wandb_project: "attor"
+
+  gcg_2l:
+    description: "GCG attack with beta=0.0, 150 steps (long)"
+    results_dir: "results_gcg_2l"
+    model: "deepseek_r1"
+    dataset: "harmful_prompts"
+    
+    experiment:
+      beta: 0.0
+      num_steps: 150
+      num_target_tokens: 20
+      num_refusal_tokens: 20
+      num_gpus: 4
+      runs_per_gpu: 1
+      max_examples: -1
+      target_override: true
+      verbose: true
+    
+    parallel:
+      num_jobs: 2
+      range_type: "percentage"
+      range_spec: "0.0:1.0"
+    
+    slurm:
+      time: "8:00:00"
+      gres: "gpu:4"
+    
+    wandb_project: "attor"
+
+  ort_custom:
+    description: "Custom orthogonalized attack for specific range"
+    results_dir: "results_ort_custom"
+    model: "deepseek_r1"
+    dataset: "cot150"
+    
+    experiment:
+      beta: 0.7
+      num_steps: 200
+      num_target_tokens: 25
+      num_refusal_tokens: 50
+      num_gpus: 4
+      runs_per_gpu: 1
+      max_examples: -1
+      target_override: true
+      verbose: true
+    
+    parallel:
+      num_jobs: 3
+      range_type: "integer"
+      range_spec: "100:500"
+    
+    slurm:
+      time: "12:00:00"
+      gres: "gpu:4"
+    
+    wandb_project: "attor"

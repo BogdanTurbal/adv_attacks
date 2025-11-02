@@ -1,0 +1,324 @@
+# Example Configuration for Orthogonalized Attacks
+# This config focuses on orthogonalized attacks with different beta values
+
+global:
+  netid: "bt4811"
+  scratch_dir: "/scratch/gpfs/KOROLOVA"
+  home_dir: "/scratch/gpfs/KOROLOVA/bt4811/reasoning_attacks_res"
+  project_dir: "/scratch/gpfs/KOROLOVA/bt4811/reasoning_attacks_res"
+  email: "bogdan.turbal.y@gmail.com"
+  
+  environment:
+    conda_env: "reasoning_env"
+    modules:
+      - "anaconda3/2025.6"
+      - "cuda/12.4"
+    
+    huggingface:
+      cache_dir: "/scratch/gpfs/KOROLOVA/huggingface"
+      offline_mode: true
+    
+    wandb:
+      entity: "bogdan-turbal-y"
+      offline_mode: true
+
+slurm_defaults:
+  nodes: 1
+  ntasks: 8
+  cpus_per_task: 2
+  mem: "128G"
+  time: "06:00:00"
+  gres: "gpu:8"
+  #constraint: "gpu80"
+  mail_type: "ALL"
+
+models:
+  deepseek_r1:
+    name: "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
+    dtype: "bfloat16"
+
+datasets:
+  cot150:
+    input_csv: "dataset/orthogonalized_outputs_cot150_2048.csv"
+
+subexperiments:
+  exp_31_ort_beta_0_0_override:
+      description: "Orthogonalized attack with beta=0.0"
+      results_dir: "exp_31_ort_beta_0_0_override"
+      model: "deepseek_r1"
+      dataset: "cot150"
+      
+      experiment:
+        beta: 0.0
+        num_steps: 150
+        num_target_tokens: 20
+        num_refusal_tokens: 45
+        num_gpus: 4
+        runs_per_gpu: 1
+        max_examples: -1
+        target_override: True
+        verbose: true
+      
+      parallel:
+        num_jobs: 12
+        range_type: "percentage"
+        range_spec: "0.0:1.0"
+      
+      slurm:
+        time: "00:59:00"
+        gres: "gpu:4"
+        nodes: 1
+        ntasks: 4
+        cpus_per_task: 8
+        mem: "128G"
+        constraint: "gpu80"
+      
+      wandb_project: "orthogonalized_attacks"
+
+  exp_30_ort_beta_0_0_exp:
+      description: "Orthogonalized attack with beta=0.5"
+      results_dir: "exp_30_results_ort_beta_0_5"
+      model: "deepseek_r1"
+      dataset: "cot150"
+      
+      experiment:
+        beta: 0.0
+        num_steps: 150
+        num_target_tokens: 20
+        num_refusal_tokens: 45
+        num_gpus: 4
+        runs_per_gpu: 1
+        max_examples: -1
+        target_override: False
+        verbose: true
+      
+      parallel:
+        num_jobs: 12
+        range_type: "percentage"
+        range_spec: "0.0:1.0"
+      
+      slurm:
+        time: "00:59:00"
+        gres: "gpu:4"
+        nodes: 1
+        ntasks: 4
+        cpus_per_task: 8
+        mem: "128G"
+        constraint: "gpu80"
+      
+      wandb_project: "orthogonalized_attacks"
+
+
+  exp_21_ort_beta_0_5_exp:
+      description: "Orthogonalized attack with beta=0.5"
+      results_dir: "exp_21_results_ort_beta_0_5"
+      model: "deepseek_r1"
+      dataset: "cot150"
+      
+      experiment:
+        beta: 0.5
+        num_steps: 150
+        num_target_tokens: 20
+        num_refusal_tokens: 45
+        num_gpus: 4
+        runs_per_gpu: 1
+        max_examples: -1
+        target_override: False
+        verbose: true
+      
+      parallel:
+        num_jobs: 15
+        range_type: "percentage"
+        range_spec: "0.5:1.0"
+      
+      slurm:
+        time: "00:45:00"
+        gres: "gpu:4"
+        nodes: 1
+        ntasks: 4
+        cpus_per_task: 8
+        mem: "128G"
+        constraint: "gpu80"
+      
+      wandb_project: "orthogonalized_attacks"
+
+  exp_20_ort_beta_0_5_exp:
+      description: "Orthogonalized attack with beta=0.5"
+      results_dir: "exp_20_results_ort_beta_0_5"
+      model: "deepseek_r1"
+      dataset: "cot150"
+      
+      experiment:
+        beta: 0.5
+        num_steps: 150
+        num_target_tokens: 20
+        num_refusal_tokens: 45
+        num_gpus: 4
+        runs_per_gpu: 1
+        max_examples: -1
+        target_override: False
+        verbose: true
+      
+      parallel:
+        num_jobs: 15
+        range_type: "percentage"
+        range_spec: "0.0:0.5"
+      
+      slurm:
+        time: "00:45:00"
+        gres: "gpu:4"
+        nodes: 1
+        ntasks: 4
+        cpus_per_task: 8
+        mem: "128G"
+        constraint: "gpu80"
+      
+      wandb_project: "orthogonalized_attacks"
+
+  exp_10_ort_beta_0_5_exp:
+      description: "Orthogonalized attack with beta=0.5"
+      results_dir: "exp_10_results_ort_beta_0_5"
+      model: "deepseek_r1"
+      dataset: "cot150"
+      
+      experiment:
+        beta: 0.5
+        num_steps: 150
+        num_target_tokens: 20
+        num_refusal_tokens: 45
+        num_gpus: 8
+        runs_per_gpu: 1
+        max_examples: -1
+        target_override: true
+        verbose: true
+      
+      parallel:
+        num_jobs: 1
+        range_type: "percentage"
+        range_spec: "0.0:1.0"
+      
+      slurm:
+        time: "12:00:00"
+        gres: "gpu:4"
+        nodes: 1
+        ntasks: 4
+        cpus_per_task: 4
+        mem: "128G"
+        #constraint: "gpu80"
+      
+      wandb_project: "orthogonalized_attacks"
+
+  exp_10_ort_beta_0_5:
+    description: "Orthogonalized attack with beta=0.5"
+    results_dir: "exp_10_results_ort_beta_0_5"
+    model: "deepseek_r1"
+    dataset: "cot150"
+    
+    experiment:
+      beta: 0.5
+      num_steps: 150
+      num_target_tokens: 20
+      num_refusal_tokens: 45
+      num_gpus: 4
+      runs_per_gpu: 1
+      max_examples: -1
+      target_override: true
+      verbose: true
+    
+    parallel:
+      num_jobs: 4
+      range_type: "percentage"
+      range_spec: "0.0:1.0"
+    
+    slurm:
+      time: "06:00:00"
+      gres: "gpu:4"
+      #constraint: "gpu80"
+    
+    wandb_project: "orthogonalized_attacks"
+
+  ort_beta_0_7:
+    description: "Orthogonalized attack with beta=0.7"
+    results_dir: "results_ort_beta_0_7"
+    model: "deepseek_r1"
+    dataset: "cot150"
+    
+    experiment:
+      beta: 0.7
+      num_steps: 150
+      num_target_tokens: 20
+      num_refusal_tokens: 45
+      num_gpus: 8
+      runs_per_gpu: 1
+      max_examples: -1
+      target_override: true
+      verbose: true
+    
+    parallel:
+      num_jobs: 1
+      range_type: "percentage"
+      range_spec: "0.0:1.0"
+    
+    slurm:
+      time: "0:30:00"
+      gres: "gpu:8"
+      constraint: "gpu80"
+    
+    wandb_project: "orthogonalized_attacks"
+
+  ort_beta_1_0:
+    description: "Orthogonalized attack with beta=1.0 (refusal only)"
+    results_dir: "results_ort_beta_1_0"
+    model: "deepseek_r1"
+    dataset: "cot150"
+    
+    experiment:
+      beta: 1.0
+      num_steps: 150
+      num_target_tokens: 20
+      num_refusal_tokens: 45
+      num_gpus: 8
+      runs_per_gpu: 1
+      max_examples: -1
+      target_override: true
+      verbose: true
+    
+    parallel:
+      num_jobs: 4
+      range_type: "percentage"
+      range_spec: "0.0:1.0"
+    
+    slurm:
+      time: "8:00:00"
+      gres: "gpu:8"
+      constraint: "gpu80"
+    
+    wandb_project: "orthogonalized_attacks"
+
+  ort_quick_test:
+    description: "Quick test run on subset"
+    results_dir: "results_ort_quick_test"
+    model: "deepseek_r1"
+    dataset: "cot150"
+    
+    experiment:
+      beta: 0.5
+      num_steps: 50
+      num_target_tokens: 20
+      num_refusal_tokens: 45
+      num_gpus: 2
+      runs_per_gpu: 1
+      max_examples: -1
+      target_override: true
+      verbose: true
+    
+    parallel:
+      num_jobs: 2
+      range_type: "integer"
+      range_spec: "0:100"
+    
+    slurm:
+      time: "2:00:00"
+      gres: "gpu:2"
+    
+    wandb_project: "orthogonalized_attacks"
