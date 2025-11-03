@@ -18,6 +18,7 @@ from math import ceil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from tqdm import tqdm
+import fcntl
 
 # Add Adversarial-Reasoning to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -209,6 +210,75 @@ def extract_target_from_response(response: str, default_target: str = "Sure") ->
         return default_target
     #print(3)
     return target
+
+
+def flatten_result(result):
+    """Flatten a single result dictionary for CSV saving."""
+    base_result = {
+        'prompt_idx': result['prompt_idx'],
+        'goal': result['goal'],
+        'target': result['target'],
+        'best_prompt': result['best_prompt'],
+        'best_loss': result['best_loss'],
+        'mean_loss': result['mean_loss'],
+        'initial_loss_mean': result['initial_loss_mean'],
+        'initial_loss_min': result['initial_loss_min'],
+        'final_loss_mean': result['final_loss_mean'],
+        'final_loss_min': result['final_loss_min'],
+        'loss_improvement': result['initial_loss_min'] - result['final_loss_min']  # Positive means improvement
+    }
+    # Add iteration losses as separate columns (for analysis)
+    if result.get('iteration_losses'):
+        for iter_loss in result['iteration_losses']:
+            iter_num = iter_loss['iteration']
+            base_result[f'iter_{iter_num}_loss_mean'] = iter_loss['loss_mean']
+            base_result[f'iter_{iter_num}_loss_min'] = iter_loss['loss_min']
+    # Add outputs
+    if result.get('outputs'):
+        for i, output in enumerate(result['outputs']):
+            base_result[f'output_{i}'] = output
+    return base_result
+
+
+def save_result_to_csv(result, output_path):
+    """Append a single result to CSV file with file locking for thread safety."""
+    try:
+        flat_result = flatten_result(result)
+        result_df = pd.DataFrame([flat_result])
+        
+        # Use file locking to prevent concurrent write conflicts
+        # Open in append mode and check file existence after acquiring lock
+        with open(output_path, 'a+') as f:
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)  # Exclusive lock
+                
+                # Check if file has content (seek to end, then check position)
+                f.seek(0, 2)  # Seek to end
+                file_pos = f.tell()
+                file_exists = file_pos > 0
+                
+                if file_exists:
+                    # Append without header
+                    result_df.to_csv(f, index=False, header=False)
+                else:
+                    # Write with header (first write)
+                    result_df.to_csv(f, index=False, header=True)
+                
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)  # Release lock
+            except (BlockingIOError, IOError, AttributeError) as e:
+                # If lock fails or fcntl not available (Windows), fallback without locking
+                # Note: On Windows, fcntl is not available, but this code runs on Linux
+                f.seek(0, 2)  # Seek to end
+                file_pos = f.tell()
+                file_exists = file_pos > 0
+                if file_exists:
+                    result_df.to_csv(f, index=False, header=False)
+                else:
+                    result_df.to_csv(f, index=False, header=True)
+        
+    except Exception as e:
+        print(f"Warning: Failed to save result to CSV: {e}")
+        # Don't fail the entire process if CSV saving fails
 
 
 def generate_new_messages_for_prompt(
@@ -635,7 +705,7 @@ def run_reprompting_attack(
     
     # Get target responses
     #print_gpu_memory("[Before getting target responses] ")
-    outputs = get_target_responses_local(model, tokenizer, final_messages, max_n_tokens=250)
+    outputs = get_target_responses_local(model, tokenizer, final_messages, max_n_tokens=1024)
     #print_gpu_memory("[After getting target responses] ")
     
     # Compute final losses
@@ -742,17 +812,18 @@ def run_attacks_on_gpu_worker(
     use_attacker_api: bool = False,
     attacker_api_model: str = None,
     attacker_api_key: str = None,
-    attacker_api_base_url: str = None
+    attacker_api_base_url: str = None,
+    output_path: str = None
 ) -> list:
     """Worker function to initialize GPU and run attacks."""
     # Initialize models on this GPU
     worker_init(gpu_id, target_model_name, attacker_model_name, attacker_quantize, attacker_quantize_bits, attacker_use_flash_attention, use_attacker_api)
     
     # Run attacks on this GPU
-    return run_attacks_on_gpu(gpu_id, examples, num_iters, num_branches, memory, K, batch_size, verbose, use_attacker_api, attacker_api_model, attacker_api_key, attacker_api_base_url)
+    return run_attacks_on_gpu(gpu_id, examples, num_iters, num_branches, memory, K, batch_size, verbose, use_attacker_api, attacker_api_model, attacker_api_key, attacker_api_base_url, output_path)
 
 
-def run_attacks_on_gpu(gpu_id: int, examples: list, num_iters: int, num_branches: int, memory: int, K: int, batch_size: int, verbose: bool, use_attacker_api: bool = False, attacker_api_model: str = None, attacker_api_key: str = None, attacker_api_base_url: str = None) -> list:
+def run_attacks_on_gpu(gpu_id: int, examples: list, num_iters: int, num_branches: int, memory: int, K: int, batch_size: int, verbose: bool, use_attacker_api: bool = False, attacker_api_model: str = None, attacker_api_key: str = None, attacker_api_base_url: str = None, output_path: str = None) -> list:
     """Run reprompting attacks on a specific GPU for assigned examples."""
     global _worker_target_model, _worker_target_tokenizer
     global _worker_attacker_model, _worker_attacker_tokenizer, _worker_attacker_name, _worker_gpu_id
@@ -819,6 +890,12 @@ def run_attacks_on_gpu(gpu_id: int, examples: list, num_iters: int, num_branches
                 print(f"[GPU {gpu_id}] Loss improvement: {result['initial_loss_min'] - result['final_loss_min']:.4f}")
             
             results.append(result)
+            
+            # Save result to CSV immediately after processing each example
+            if output_path:
+                save_result_to_csv(result, output_path)
+                if verbose:
+                    print(f"[GPU {gpu_id}] Saved result for example {df_idx} to CSV")
             
             # Print GPU memory after each example
             if torch.cuda.is_available():
@@ -915,6 +992,9 @@ def main():
     os.makedirs(results_dir, exist_ok=True)
     print(f'Created results directory: {results_dir}')
     
+    # Set up output CSV path for incremental saving
+    output_path = os.path.join(results_dir, 'results.csv')
+    
     # Prepare experiments list (each example becomes an experiment)
     experiments = [(idx, row) for idx, row in df.iterrows()]
     total_examples = len(experiments)
@@ -984,7 +1064,8 @@ def main():
                     args.attacker_api,
                     args.attacker_api_model,
                     args.attacker_api_key,
-                    args.attacker_api_base_url
+                    args.attacker_api_base_url,
+                    output_path
                 )
                 for gpu_id in range(args.num_gpus)
                 if experiments_per_gpu[gpu_id]  # Only include GPUs with experiments
@@ -1063,6 +1144,11 @@ def main():
                 
                 results.append(result)
                 
+                # Save result to CSV immediately after processing each example
+                save_result_to_csv(result, output_path)
+                if args.verbose:
+                    print(f"  Saved result for example {idx} to CSV")
+                
             except Exception as e:
                 print(f"Error processing example {idx}: {e}")
                 if args.verbose:
@@ -1073,43 +1159,23 @@ def main():
     # Print final GPU memory
     #print_gpu_memory("[After attack loop completed] ")
     
-    # Save results
+    # Save final results summary (incremental saves already done after each example)
+    # This final save ensures consistency and completeness
     if results:
         # Flatten outputs for CSV
         flat_results = []
         for r in results:
-            base_result = {
-                'prompt_idx': r['prompt_idx'],
-                'goal': r['goal'],
-                'target': r['target'],
-                'best_prompt': r['best_prompt'],
-                'best_loss': r['best_loss'],
-                'mean_loss': r['mean_loss'],
-                'initial_loss_mean': r['initial_loss_mean'],
-                'initial_loss_min': r['initial_loss_min'],
-                'final_loss_mean': r['final_loss_mean'],
-                'final_loss_min': r['final_loss_min'],
-                'loss_improvement': r['initial_loss_min'] - r['final_loss_min']  # Positive means improvement
-            }
-            # Add iteration losses as separate columns (for analysis)
-            if r['iteration_losses']:
-                for iter_loss in r['iteration_losses']:
-                    iter_num = iter_loss['iteration']
-                    base_result[f'iter_{iter_num}_loss_mean'] = iter_loss['loss_mean']
-                    base_result[f'iter_{iter_num}_loss_min'] = iter_loss['loss_min']
-            # Add outputs
-            if r['outputs']:
-                for i, output in enumerate(r['outputs']):
-                    base_result[f'output_{i}'] = output
-            flat_results.append(base_result)
+            flat_result = flatten_result(r)
+            flat_results.append(flat_result)
         
         results_df = pd.DataFrame(flat_results)
-        output_path = os.path.join(results_dir, 'results.csv')
+        # Overwrite with complete results to ensure consistency
         results_df.to_csv(output_path, index=False)
         
         if args.verbose:
-            print(f"Saved results to {output_path}")
-            print(f"Processed {len(results)} examples")
+            print(f"\nFinal results summary saved to {output_path}")
+            print(f"Processed {len(results)} examples total")
+            print("(Results were also saved incrementally after each example)")
     else:
         print("No results to save")
 

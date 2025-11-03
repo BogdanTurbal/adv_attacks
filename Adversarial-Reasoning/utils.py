@@ -413,7 +413,200 @@ def get_target_responses_API_prop(target_address, messages, name="llama-2", max_
             remained_indices = [remained_indices[idx] for idx in retry_indices]
                       
             
+# def get_losses(model, tokenizer, messages, target, model_name):
+#     """
+#     ORIGINAL VERSION - COMMENTED OUT
+#     Computes cross-entropy loss between model predictions and target tokens.
+#     For each message, measures how well the model predicts the target response.
+#     Different model families use different loss computation strategies:
+#     - llama-2: Uses system prompt, specific logit/token slicing
+#     - llama-3/mistral: Standard prompt+target loss computation
+#     - zephyr: Similar to llama-3 but with different logit offset
+#     - deepseek/r1: (OLD) Generated responses first, then computed loss on extracted answers
+#     """
+#     with torch.no_grad():
+#         crit = nn.CrossEntropyLoss()
+#         losses = []
+#             
+#         if "llama-2" in model_name.lower():
+#             inputs = tokenizer([get_prompt_target(tokenizer, message, target, system_prompt= LLAMA_SYSTEM_MESSAGE) for message in messages], return_tensors="pt", padding= True, add_special_tokens=False).to(device = model.device)
+#             batch_logits = model(input_ids= inputs.input_ids, attention_mask= inputs.attention_mask).logits
+# 
+#             for i, logits in enumerate(batch_logits):
+#                 l1= len(tokenizer(get_prompt_target(tokenizer, messages[i], system_prompt= LLAMA_SYSTEM_MESSAGE), return_tensors="pt", padding= True ,add_special_tokens=False).input_ids.squeeze())
+#                 l2= len(tokenizer(get_prompt_target(tokenizer, messages[i], target, system_prompt= LLAMA_SYSTEM_MESSAGE), return_tensors="pt", padding= True, add_special_tokens=False).input_ids.squeeze())
+#                 
+#                 loss_logits = logits[-(l2-l1) -1: -3]
+#                 loss = crit(loss_logits, inputs.input_ids[i][-(l2-l1): -2])
+#                 
+#                 losses.append(loss.detach())
+#         
+#         elif ("llama-3" in model_name.lower()) or ("mistral" in model_name.lower()):
+#             inputs = tokenizer([get_prompt_target(tokenizer, message, target) for message in messages], return_tensors="pt", padding= True, add_special_tokens=False).to(device = model.device)
+#             batch_logits = model(input_ids= inputs.input_ids, attention_mask= inputs.attention_mask).logits
+# 
+#             for i, logits in enumerate(batch_logits):
+#                 l1= len(tokenizer(get_prompt_target(tokenizer, messages[i]), return_tensors="pt", padding= True,add_special_tokens=False).input_ids.squeeze())
+#                 l2= len(tokenizer(get_prompt_target(tokenizer, messages[i], target), return_tensors="pt", padding= True, add_special_tokens=False).input_ids.squeeze())
+#                 
+#                 loss_logits = logits[-(l2-l1) -1: -2]
+#                 loss = crit(loss_logits, inputs.input_ids[i][-(l2-l1): -1])
+#                 
+#                 losses.append(loss.detach())
+#                 
+#         elif "zephyr" in model_name.lower():
+#             inputs = tokenizer([get_prompt_target(tokenizer, message, target) for message in messages], return_tensors="pt", padding= True, add_special_tokens=False).to(device = model.device)
+#             batch_logits = model(input_ids= inputs.input_ids, attention_mask= inputs.attention_mask).logits
+# 
+#             for i, logits in enumerate(batch_logits):
+#                 l1= len(tokenizer(get_prompt_target(tokenizer, messages[i]), return_tensors="pt", padding= True, add_special_tokens=False).input_ids.squeeze())
+#                 l2= len(tokenizer(get_prompt_target(tokenizer, messages[i], target), return_tensors="pt", padding= True, add_special_tokens=False).input_ids.squeeze())
+#                 
+#                 loss_logits = logits[-(l2-l1) -1: -4]
+#                 loss = crit(loss_logits, inputs.input_ids[i][-(l2-l1): -3])
+#                 
+#                 losses.append(loss.detach())
+#         
+#         elif "deepseek" in model_name.lower() or "r1" in model_name.lower():
+#             # For DeepSeek-R1: Generate actual responses, extract final answers after </think>, compute loss
+#             # Step 1: Generate actual responses from DeepSeek (batched)
+#             inputs_batch = [
+#                 [{"role": "user", "content": message}]
+#                 for message in messages
+#             ]
+#             
+#             full_prompts = tokenizer.apply_chat_template(inputs_batch, tokenize=False, add_generation_prompt=True)
+#             input_ids, attention_mask = tokenizer(full_prompts, return_tensors='pt', padding=True, add_special_tokens=False).to(device=model.device).values()
+#             
+#             # Generate responses in batch
+#             with torch.no_grad():
+#                 output_ids = model.generate(
+#                     input_ids=input_ids,
+#                     max_new_tokens=1024,
+#                     do_sample=True,
+#                     top_p=1.0,
+#                     temperature=0.6,
+#                     attention_mask=attention_mask,
+#                     pad_token_id=tokenizer.pad_token_id,
+#                     eos_token_id=tokenizer.eos_token_id
+#                 )
+#             
+#             # Slice off input tokens to get only generated tokens
+#             if not model.config.is_encoder_decoder:
+#                 generated_ids = output_ids[:, input_ids.shape[1]:]
+#             else:
+#                 generated_ids = output_ids
+#             
+#             # Token IDs for </think> (DeepSeek-R1 uses this marker for reasoning)
+#             think_end_tokens = tokenizer.encode("</think>", add_special_tokens=False)
+#             think_end_tokens_tensor = torch.tensor(think_end_tokens, device=generated_ids.device)
+#             
+#             # Step 2: Extract final answers after </think> from generated responses
+#             # Step 3: Compute loss by comparing how well model predicts target given the prompt
+#             # The loss measures prompt effectiveness: how likely is target given the prompt?
+#             
+#             # For each message, extract final answer and compute loss
+#             for i in range(len(messages)):
+#                 gen_seq = generated_ids[i]
+#                 
+#                 # Find position of </think> in the generated sequence
+#                 think_end_pos = None
+#                 for j in range(len(gen_seq) - len(think_end_tokens) + 1):
+#                     if torch.equal(gen_seq[j:j+len(think_end_tokens)], think_end_tokens_tensor):
+#                         think_end_pos = j + len(think_end_tokens)
+#                         break
+#                 
+#                 # Extract final answer tokens after </think>
+#                 if think_end_pos is not None:
+#                     final_answer_ids = gen_seq[think_end_pos:]
+#                 else:
+#                     # If </think> not found, use all generated tokens as final answer
+#                     final_answer_ids = gen_seq
+#                 
+#                 # Decode to get final answer text (for reference, though not directly used in loss computation)
+#                 final_answer_text = tokenizer.decode(final_answer_ids, skip_special_tokens=True)
+#                 print(f"Final answer text: {final_answer_text}")
+#                 # Step 3: Compute loss - measure how well the prompt leads to target generation
+#                 # We compute loss on how well model predicts target tokens given the prompt
+#                 # This measures the effectiveness of the prompt at eliciting the target response
+#                 
+#                 # Create prompt+target input for forward pass
+#                 prompt_target_text = get_prompt_target(tokenizer, messages[i], target)
+#                 prompt_target_input = tokenizer([prompt_target_text], return_tensors="pt", padding=True, add_special_tokens=False).to(device=model.device)
+#                 
+#                 with torch.no_grad():
+#                     prompt_target_logits = model(input_ids=prompt_target_input.input_ids, attention_mask=prompt_target_input.attention_mask).logits
+#                 
+#                 # Find where target tokens start in the sequence
+#                 prompt_only_text = get_prompt_target(tokenizer, messages[i])
+#                 prompt_only_input = tokenizer([prompt_only_text], return_tensors="pt", padding=True, add_special_tokens=False).input_ids.to(device=model.device)
+#                 
+#                 l1 = prompt_only_input.shape[1]
+#                 l2 = prompt_target_input.input_ids.shape[1]
+#                 target_start_pos = l1
+#                 target_length = l2 - l1
+#                 
+#                 # Compute loss on target prediction
+#                 # This measures: given the prompt, how likely is the model to generate the target?
+#                 if target_length > 0 and target_start_pos > 0:
+#                     target_pred_logits = prompt_target_logits[0, target_start_pos-1:target_start_pos-1+target_length]
+#                     target_labels = prompt_target_input.input_ids[0, target_start_pos:target_start_pos+target_length]
+#                     
+#                     # Compute loss: lower loss = model is more likely to generate target given the prompt
+#                     min_len = min(len(target_pred_logits), len(target_labels))
+#                     if min_len > 0:
+#                         loss = crit(target_pred_logits[:min_len], target_labels[:min_len])
+#                     else:
+#                         loss = torch.tensor(float('inf'), device=model.device)
+#                 else:
+#                     loss = torch.tensor(float('inf'), device=model.device)
+#                 
+#                 losses.append(loss.detach())
+#                 
+#                 # Clean up per-iteration
+#                 del prompt_target_logits, prompt_target_input, prompt_only_input
+#             
+#             # Clean up
+#             del output_ids, generated_ids, input_ids, attention_mask
+#             gc.collect()
+#             torch.cuda.empty_cache()
+#                 
+#         losses= torch.tensor(losses).to(device = model.device)
+#         cen_losses = losses - torch.mean(losses)
+#         
+#     gc.collect()
+#     # Clean up batch_logits only if it exists (not used in DeepSeek branch)
+#     try:
+#         del batch_logits
+#     except NameError:
+#         pass  # batch_logits doesn't exist in DeepSeek branch, which is fine
+#     torch.cuda.empty_cache()
+#         
+#     return losses, cen_losses
+
+
 def get_losses(model, tokenizer, messages, target, model_name):
+    """
+    Computes cross-entropy loss between model predictions and target tokens.
+    For each message, measures how well the model predicts the target response.
+    
+    Different model families use different loss computation strategies:
+    - llama-2: Uses system prompt, specific logit/token slicing
+    - llama-3/mistral: Standard prompt+target loss computation  
+    - zephyr: Similar to llama-3 but with different logit offset
+    - deepseek/r1: Adds "think" token before target, then computes loss using same mechanism as llama-3/mistral
+    
+    Args:
+        model: The language model
+        tokenizer: Tokenizer for the model
+        messages: List of prompt messages
+        target: Target response string
+        model_name: Name/identifier of the model
+    
+    Returns:
+        losses: Tensor of losses for each message
+        cen_losses: Centered losses (losses - mean)
+    """
     with torch.no_grad():
         crit = nn.CrossEntropyLoss()
         losses = []
@@ -458,108 +651,25 @@ def get_losses(model, tokenizer, messages, target, model_name):
                 losses.append(loss.detach())
         
         elif "deepseek" in model_name.lower() or "r1" in model_name.lower():
-            # For DeepSeek-R1: Generate actual responses, extract final answers after </think>, compute loss
-            # Step 1: Generate actual responses from DeepSeek (batched)
-            inputs_batch = [
-                [{"role": "user", "content": message}]
-                for message in messages
-            ]
+            # For DeepSeek: Add "think" token before target, then compute loss using same mechanism as llama-3/mistral
+            # The think token is "</think>" which DeepSeek models use to mark the end of reasoning
+            think_token = "</think>"
             
-            full_prompts = tokenizer.apply_chat_template(inputs_batch, tokenize=False, add_generation_prompt=True)
-            input_ids, attention_mask = tokenizer(full_prompts, return_tensors='pt', padding=True, add_special_tokens=False).to(device=model.device).values()
+            # Construct target with think token: think_token + target
+            target_with_think = think_token + "\n" + target
             
-            # Generate responses in batch
-            with torch.no_grad():
-                output_ids = model.generate(
-                    input_ids=input_ids,
-                    max_new_tokens=1024,
-                    do_sample=True,
-                    top_p=1.0,
-                    temperature=0.6,
-                    attention_mask=attention_mask,
-                    pad_token_id=tokenizer.pad_token_id,
-                    eos_token_id=tokenizer.eos_token_id
-                )
-            
-            # Slice off input tokens to get only generated tokens
-            if not model.config.is_encoder_decoder:
-                generated_ids = output_ids[:, input_ids.shape[1]:]
-            else:
-                generated_ids = output_ids
-            
-            # Token IDs for </think> (DeepSeek-R1 uses this marker for reasoning)
-            think_end_tokens = tokenizer.encode("</think>", add_special_tokens=False)
-            think_end_tokens_tensor = torch.tensor(think_end_tokens, device=generated_ids.device)
-            
-            # Step 2: Extract final answers after </think> from generated responses
-            # Step 3: Compute loss by comparing how well model predicts target given the prompt
-            # The loss measures prompt effectiveness: how likely is target given the prompt?
-            
-            # For each message, extract final answer and compute loss
-            for i in range(len(messages)):
-                gen_seq = generated_ids[i]
+            # Use same loss computation mechanism as llama-3/mistral
+            inputs = tokenizer([get_prompt_target(tokenizer, message, target_with_think) for message in messages], return_tensors="pt", padding= True, add_special_tokens=False).to(device = model.device)
+            batch_logits = model(input_ids= inputs.input_ids, attention_mask= inputs.attention_mask).logits
+
+            for i, logits in enumerate(batch_logits):
+                l1= len(tokenizer(get_prompt_target(tokenizer, messages[i]), return_tensors="pt", padding= True,add_special_tokens=False).input_ids.squeeze())
+                l2= len(tokenizer(get_prompt_target(tokenizer, messages[i], target_with_think), return_tensors="pt", padding= True, add_special_tokens=False).input_ids.squeeze())
                 
-                # Find position of </think> in the generated sequence
-                think_end_pos = None
-                for j in range(len(gen_seq) - len(think_end_tokens) + 1):
-                    if torch.equal(gen_seq[j:j+len(think_end_tokens)], think_end_tokens_tensor):
-                        think_end_pos = j + len(think_end_tokens)
-                        break
-                
-                # Extract final answer tokens after </think>
-                if think_end_pos is not None:
-                    final_answer_ids = gen_seq[think_end_pos:]
-                else:
-                    # If </think> not found, use all generated tokens as final answer
-                    final_answer_ids = gen_seq
-                
-                # Decode to get final answer text (for reference, though not directly used in loss computation)
-                final_answer_text = tokenizer.decode(final_answer_ids, skip_special_tokens=True)
-                print(f"Final answer text: {final_answer_text}")
-                # Step 3: Compute loss - measure how well the prompt leads to target generation
-                # We compute loss on how well model predicts target tokens given the prompt
-                # This measures the effectiveness of the prompt at eliciting the target response
-                
-                # Create prompt+target input for forward pass
-                prompt_target_text = get_prompt_target(tokenizer, messages[i], target)
-                prompt_target_input = tokenizer([prompt_target_text], return_tensors="pt", padding=True, add_special_tokens=False).to(device=model.device)
-                
-                with torch.no_grad():
-                    prompt_target_logits = model(input_ids=prompt_target_input.input_ids, attention_mask=prompt_target_input.attention_mask).logits
-                
-                # Find where target tokens start in the sequence
-                prompt_only_text = get_prompt_target(tokenizer, messages[i])
-                prompt_only_input = tokenizer([prompt_only_text], return_tensors="pt", padding=True, add_special_tokens=False).input_ids.to(device=model.device)
-                
-                l1 = prompt_only_input.shape[1]
-                l2 = prompt_target_input.input_ids.shape[1]
-                target_start_pos = l1
-                target_length = l2 - l1
-                
-                # Compute loss on target prediction
-                # This measures: given the prompt, how likely is the model to generate the target?
-                if target_length > 0 and target_start_pos > 0:
-                    target_pred_logits = prompt_target_logits[0, target_start_pos-1:target_start_pos-1+target_length]
-                    target_labels = prompt_target_input.input_ids[0, target_start_pos:target_start_pos+target_length]
-                    
-                    # Compute loss: lower loss = model is more likely to generate target given the prompt
-                    min_len = min(len(target_pred_logits), len(target_labels))
-                    if min_len > 0:
-                        loss = crit(target_pred_logits[:min_len], target_labels[:min_len])
-                    else:
-                        loss = torch.tensor(float('inf'), device=model.device)
-                else:
-                    loss = torch.tensor(float('inf'), device=model.device)
+                loss_logits = logits[-(l2-l1) -1: -2]
+                loss = crit(loss_logits, inputs.input_ids[i][-(l2-l1): -1])
                 
                 losses.append(loss.detach())
-                
-                # Clean up per-iteration
-                del prompt_target_logits, prompt_target_input, prompt_only_input
-            
-            # Clean up
-            del output_ids, generated_ids, input_ids, attention_mask
-            gc.collect()
-            torch.cuda.empty_cache()
                 
         losses= torch.tensor(losses).to(device = model.device)
         cen_losses = losses - torch.mean(losses)
