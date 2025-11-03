@@ -11,6 +11,7 @@ import json
 import numpy as np
 import os
 from openai import OpenAI
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 
@@ -185,6 +186,7 @@ def prompt_openrouter_batch(model_name, conv, batch, api_key=None, base_url="htt
 def prompt_openrouter_multi(model_name, convs, api_key=None, base_url="https://openrouter.ai/api/v1"):
     """
     Generate multiple completions using OpenRouter API (one per conversation).
+    Uses batched concurrent API calls for efficiency.
     
     Args:
         model_name: Model identifier (e.g., "mistralai/mixtral-8x7b-instruct")
@@ -200,54 +202,55 @@ def prompt_openrouter_multi(model_name, convs, api_key=None, base_url="https://o
         if api_key is None:
             raise ValueError("OpenRouter API key not provided and OPENROUTER_API_KEY environment variable not set")
     
-    # Prepare messages for batch completion
-    messages_list = [conv.to_openai_api_messages() for conv in convs]
+    if not convs:
+        return []
     
-    # Use batched inference with litellm
-    # Store original API key and base_url to restore later if needed
-    original_api_key = os.environ.get("OPENROUTER_API_KEY")
-    original_api_base = getattr(litellm, 'api_base', None)
+    # Create a single client to be shared across threads
+    client = OpenAI(
+        base_url=base_url,
+        api_key=api_key,
+    )
     
-    try:
-        # Temporarily set OpenRouter API key for litellm
-        os.environ["OPENROUTER_API_KEY"] = api_key
+    # Helper function to make a single API call
+    def make_api_call(conv):
+        messages = conv.to_openai_api_messages()
+        try:
+            completion = client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=1.0,
+                top_p=0.9,
+                extra_headers={
+                    "HTTP-Referer": "https://github.com",  # Optional but recommended
+                    "X-Title": "Adversarial Reasoning Attack",  # Optional
+                },
+            )
+            response_content = completion.choices[0].message.content
+            return response_content
+        except Exception as e:
+            print(f"Error in OpenRouter API call: {e}")
+            return ""  # Placeholder for failed request
+    
+    # Use ThreadPoolExecutor for batched concurrent API calls
+    responses = [None] * len(convs)
+    
+    with ThreadPoolExecutor(max_workers=min(len(convs), 20)) as executor:
+        # Submit all API calls concurrently
+        future_to_idx = {
+            executor.submit(make_api_call, conv): idx
+            for idx, conv in enumerate(convs)
+        }
         
-        # Use batched inference - litellm will handle parallel requests efficiently
-        # Configure litellm to use OpenRouter (OpenAI-compatible API)
-        outputs = litellm.batch_completion(
-            model=model_name,
-            messages=messages_list,
-            temperature=1.0,
-            top_p=0.9,
-            api_base=base_url,
-            api_key=api_key,
-            extra_headers={
-                "HTTP-Referer": "https://github.com",
-                "X-Title": "Adversarial Reasoning Attack",
-            },
-        )
-        
-        responses = []
-        for idx, output in enumerate(outputs):
+        # Collect results as they complete
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
             try:
-                response_content = output["choices"][0]["message"].content
-                responses.append(response_content)
+                responses[idx] = future.result()
             except Exception as e:
-                print(f"Error processing response {idx} in OpenRouter batch: {e}")
-                responses.append("")  # Placeholder for failed request
-        
-        return responses
-    except Exception as e:
-        print(f"Error in OpenRouter batch API call: {e}")
-        # Fallback to empty responses
-        return [""] * len(convs)
-    finally:
-        # Restore original API key if it was set
-        if original_api_key is not None:
-            os.environ["OPENROUTER_API_KEY"] = original_api_key
-        elif "OPENROUTER_API_KEY" in os.environ and original_api_key is None:
-            # Only delete if we added it
-            pass  # Keep it since it might be used elsewhere
+                print(f"Error getting result for conversation {idx}: {e}")
+                responses[idx] = ""  # Placeholder for failed request
+    
+    return responses
 
 
 def send_query_function(address, convs, function_template, key, temperature=0.7, top_p = 0.9, seed=0, presence_penalty=0.0, frequency_penalty=0.0):
@@ -469,7 +472,7 @@ def get_losses(model, tokenizer, messages, target, model_name):
             with torch.no_grad():
                 output_ids = model.generate(
                     input_ids=input_ids,
-                    max_new_tokens=250,
+                    max_new_tokens=1024,
                     do_sample=True,
                     top_p=1.0,
                     temperature=0.6,
