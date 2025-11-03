@@ -10,6 +10,7 @@ from fastchat.model import get_conversation_template
 import json
 import numpy as np
 import os
+from openai import OpenAI
 
 
 
@@ -127,6 +128,104 @@ def prompt_togetherai_multi(name, convs):
                                     top_p = 0.9)
     
     responses = [output["choices"][0]["message"].content for output in outputs]
+    
+    return responses
+
+
+def prompt_openrouter_batch(model_name, conv, batch, api_key=None, base_url="https://openrouter.ai/api/v1"):
+    """
+    Generate batch completions using OpenRouter API.
+    
+    Args:
+        model_name: Model identifier (e.g., "mistralai/mixtral-8x7b-instruct")
+        conv: Conversation template
+        batch: Number of completions to generate
+        api_key: OpenRouter API key (if None, reads from environment or config)
+        base_url: Base URL for OpenRouter API
+    
+    Returns:
+        List of generated text responses
+    """
+    if api_key is None:
+        api_key = os.environ.get("OPENROUTER_API_KEY")
+        if api_key is None:
+            raise ValueError("OpenRouter API key not provided and OPENROUTER_API_KEY environment variable not set")
+    
+    client = OpenAI(
+        base_url=base_url,
+        api_key=api_key,
+    )
+    
+    messages = conv.to_openai_api_messages()
+    responses = []
+    
+    # Generate batch requests - OpenRouter supports batch requests
+    for _ in range(batch):
+        try:
+            completion = client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=1.0,
+                top_p=0.9,
+                extra_headers={
+                    "HTTP-Referer": "https://github.com",  # Optional but recommended
+                    "X-Title": "Adversarial Reasoning Attack",  # Optional
+                },
+            )
+            response_content = completion.choices[0].message.content
+            responses.append(response_content)
+        except Exception as e:
+            print(f"Error in OpenRouter API call: {e}")
+            # Retry or return partial results
+            responses.append("")  # Placeholder for failed request
+    
+    return responses
+
+
+def prompt_openrouter_multi(model_name, convs, api_key=None, base_url="https://openrouter.ai/api/v1"):
+    """
+    Generate multiple completions using OpenRouter API (one per conversation).
+    
+    Args:
+        model_name: Model identifier (e.g., "mistralai/mixtral-8x7b-instruct")
+        convs: List of conversation templates
+        api_key: OpenRouter API key (if None, reads from environment or config)
+        base_url: Base URL for OpenRouter API
+    
+    Returns:
+        List of generated text responses
+    """
+    if api_key is None:
+        api_key = os.environ.get("OPENROUTER_API_KEY")
+        if api_key is None:
+            raise ValueError("OpenRouter API key not provided and OPENROUTER_API_KEY environment variable not set")
+    
+    client = OpenAI(
+        base_url=base_url,
+        api_key=api_key,
+    )
+    
+    responses = []
+    
+    # Process each conversation sequentially (OpenRouter may support batch, but we'll do sequential for reliability)
+    for conv in convs:
+        messages = conv.to_openai_api_messages()
+        try:
+            completion = client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=1.0,
+                top_p=0.9,
+                extra_headers={
+                    "HTTP-Referer": "https://github.com",  # Optional but recommended
+                    "X-Title": "Adversarial Reasoning Attack",  # Optional
+                },
+            )
+            response_content = completion.choices[0].message.content
+            responses.append(response_content)
+        except Exception as e:
+            print(f"Error in OpenRouter API call: {e}")
+            responses.append("")  # Placeholder for failed request
     
     return responses
 

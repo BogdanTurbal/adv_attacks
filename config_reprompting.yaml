@@ -7,6 +7,7 @@ global:
   home_dir: "/scratch/gpfs/KOROLOVA/bt4811/usefatt/reasoning_attacks_res"
   project_dir: "/scratch/gpfs/KOROLOVA/bt4811/usefatt"
   email: "bogdan.turbal.y@gmail.com"
+  no_slurm: false  # If true, generate Python commands instead of submitting SLURM jobs
   
   environment:
     conda_env: "reasoning_env"
@@ -21,6 +22,9 @@ global:
     wandb:
       entity: "bogdan-turbal-y"
       offline_mode: true
+    
+    openrouter:
+
 
 slurm_defaults:
   nodes: 1
@@ -61,24 +65,25 @@ subexperiments:
       batch_size: 16
       max_examples: -1
       verbose: true
-      num_gpus: 4  # Number of GPUs to use for parallel processing
-      attacker_quantize: true  # Enable quantization for attacker model
+      num_gpus: 2 # Number of GPUs to use for parallel processing
+      attacker_api: true  # If true, use OpenRouter API instead of local attacker model
+      attacker_quantize: true  # Enable quantization for attacker model (ignored if attacker_api is true)
       attacker_quantize_bits: 4  # 4 or 8 bit quantization
-      attacker_use_flash_attention: true  # Enable Flash Attention 2 for attacker model
+      attacker_use_flash_attention: false  # Enable Flash Attention 2 for attacker model (ignored if attacker_api is true)
     
     parallel:
-      num_jobs: 16
+      num_jobs: 1
       range_type: "percentage"
-      range_spec: "0.0:0.5"
+      range_spec: "0.0:0.1"
     
     slurm:
-      time: "00:30:00"
-      gres: "gpu:4"
+      time: "00:59:00"
+      gres: "gpu:2"
       nodes: 1
-      ntasks: 4
-      cpus_per_task: 4
+      ntasks: 2
+      cpus_per_task: 1
       mem: "128G"
-      constraint: "gpu80"
+      constraint: null  # Explicitly remove constraint from defaults
     
     wandb_project: "reprompting_attacks"
 

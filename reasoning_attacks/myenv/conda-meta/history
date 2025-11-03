@@ -1,0 +1,3 @@
+==> 2025-11-02 20:49:53 <==
+# cmd: /usr/local/anaconda3/2024.02/bin/conda create --prefix ./myenv
+# conda version: 24.1.2

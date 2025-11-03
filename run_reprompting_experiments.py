@@ -78,6 +78,15 @@ def generate_slurm_script(subexp_name: str, subexp_config: Dict[str, Any], globa
     attacker_model_name = global_config['models'][subexp_config['attacker_model']]['name']
     dataset_csv = global_config['datasets'][subexp_config['dataset']]['input_csv']
     
+    # Get OpenRouter API settings from global config
+    openrouter_config = global_config['global'].get('environment', {}).get('openrouter', {})
+    openrouter_api_key = openrouter_config.get('api_key', '')
+    openrouter_model = openrouter_config.get('model', 'mistralai/mixtral-8x7b-instruct')
+    openrouter_base_url = openrouter_config.get('base_url', 'https://openrouter.ai/api/v1')
+    
+    # Get attacker_api setting from experiment config
+    attacker_api = experiment_params.get('attacker_api', False)
+    
     # Get results directory for this experiment (where SLURM logs will be saved)
     results_dir = subexp_config['results_dir']
     experiment_results_dir = f"/scratch/gpfs/KOROLOVA/bt4811/usefatt/reasoning_attacks_res/{results_dir}"
@@ -85,7 +94,7 @@ def generate_slurm_script(subexp_name: str, subexp_config: Dict[str, Any], globa
     # Generate SLURM script
     # Build constraint line conditionally
     constraint_line = ""
-    if 'constraint' in slurm_settings and slurm_settings['constraint']:
+    if 'constraint' in slurm_settings and slurm_settings['constraint'] is not None and slurm_settings['constraint'] != "":
         constraint_line = f"#SBATCH --constraint={slurm_settings['constraint']}\n"
     
     script_content = f"""#!/bin/bash
@@ -190,9 +199,13 @@ bash ./run_reprompting_unified.sh \\
     --wandb-entity "{global_settings['environment']['wandb']['entity']}" \\
     {"--verbose" if experiment_params.get('verbose', False) else ""} \\
     {"--wandb-offline" if global_settings['environment']['wandb']['offline_mode'] else ""} \\
-    {"--attacker-quantize" if experiment_params.get('attacker_quantize', False) else ""} \\
-    {f"--attacker-quantize-bits {experiment_params.get('attacker_quantize_bits', 8)}" if experiment_params.get('attacker_quantize', False) else ""} \\
-    {"--attacker-use-flash-attention" if experiment_params.get('attacker_use_flash_attention', False) else ""} \\
+    {"--attacker-api" if attacker_api else ""} \\
+    {f"--attacker-api-model {openrouter_model}" if attacker_api else ""} \\
+    {f"--attacker-api-key {openrouter_api_key}" if attacker_api else ""} \\
+    {f"--attacker-api-base-url {openrouter_base_url}" if attacker_api else ""} \\
+    {"--attacker-quantize" if experiment_params.get('attacker_quantize', False) and not attacker_api else ""} \\
+    {f"--attacker-quantize-bits {experiment_params.get('attacker_quantize_bits', 8)}" if experiment_params.get('attacker_quantize', False) and not attacker_api else ""} \\
+    {"--attacker-use-flash-attention" if experiment_params.get('attacker_use_flash_attention', False) and not attacker_api else ""} \\
     --num-gpus {experiment_params.get('num_gpus', 4)}
 
 # Copy results back to home directory
@@ -234,7 +247,79 @@ def get_total_examples_in_range(dataset_csv: str, range_type: str, range_spec: s
         return -1, -1, -1
 
 
-def submit_parallel_jobs(subexp_name: str, subexp_config: Dict[str, Any], global_config: Dict[str, Any], dry_run: bool = False) -> List[str]:
+def generate_python_command(subexp_name: str, subexp_config: Dict[str, Any], global_config: Dict[str, Any], example_range: str, job_id: str) -> str:
+    """Generate Python command for running reprompting attack directly (without SLURM)."""
+    
+    global_settings = global_config['global']
+    experiment_params = subexp_config['experiment']
+    
+    # Get model and dataset info
+    model_name = global_config['models'][subexp_config['model']]['name']
+    attacker_model_name = global_config['models'][subexp_config['attacker_model']]['name']
+    dataset_csv = global_config['datasets'][subexp_config['dataset']]['input_csv']
+    
+    # Get OpenRouter API settings
+    openrouter_config = global_settings.get('environment', {}).get('openrouter', {})
+    openrouter_api_key = openrouter_config.get('api_key', '')
+    openrouter_model = openrouter_config.get('model', 'mistralai/mixtral-8x7b-instruct')
+    openrouter_base_url = openrouter_config.get('base_url', 'https://openrouter.ai/api/v1')
+    
+    # Get attacker_api setting
+    attacker_api = experiment_params.get('attacker_api', False)
+    
+    # Build Python command
+    results_dir = subexp_config['results_dir']
+    project_dir = global_settings['project_dir']
+    
+    # For Colab, use relative paths; otherwise use absolute
+    if '/content' in project_dir:
+        script_path = "Adversarial-Reasoning/run_reprompting_attack.py"
+    else:
+        script_path = f"{project_dir}/Adversarial-Reasoning/run_reprompting_attack.py"
+    
+    cmd_parts = [
+        "python",
+        script_path,
+        f"--example-range {example_range}",
+        f"--job-id {job_id}",
+        f"--results-dir {results_dir}/{job_id}",
+        f"--num-iters {experiment_params['num_iters']}",
+        f"--num-branches {experiment_params['num_branches']}",
+        f"--memory {experiment_params['memory']}",
+        f"--K {experiment_params['K']}",
+        f"--batch-size {experiment_params['batch_size']}",
+        f"--max-examples {experiment_params.get('max_examples', -1)}",
+        f"--input-csv {dataset_csv}",
+        f"--model-name {model_name}",
+        f"--attacker-model-name {attacker_model_name}",
+        f"--wandb-project {subexp_config.get('wandb_project', 'reprompting_attacks')}",
+        f"--wandb-entity {global_settings['environment']['wandb']['entity']}",
+    ]
+    
+    if experiment_params.get('verbose', False):
+        cmd_parts.append("--verbose")
+    
+    if global_settings['environment']['wandb']['offline_mode']:
+        cmd_parts.append("--wandb-offline")
+    
+    if attacker_api:
+        cmd_parts.append("--attacker-api")
+        cmd_parts.append(f"--attacker-api-model {openrouter_model}")
+        cmd_parts.append(f"--attacker-api-key {openrouter_api_key}")
+        cmd_parts.append(f"--attacker-api-base-url {openrouter_base_url}")
+    else:
+        if experiment_params.get('attacker_quantize', False):
+            cmd_parts.append("--attacker-quantize")
+            cmd_parts.append(f"--attacker-quantize-bits {experiment_params.get('attacker_quantize_bits', 8)}")
+        if experiment_params.get('attacker_use_flash_attention', False):
+            cmd_parts.append("--attacker-use-flash-attention")
+    
+    cmd_parts.append(f"--num-gpus {experiment_params.get('num_gpus', 1)}")
+    
+    return " \\\n    ".join(cmd_parts)
+
+
+def submit_parallel_jobs(subexp_name: str, subexp_config: Dict[str, Any], global_config: Dict[str, Any], dry_run: bool = False, no_slurm: bool = False) -> List[str]:
     """Submit parallel jobs for a reprompting subexperiment."""
     
     parallel_params = subexp_config['parallel']
@@ -246,24 +331,29 @@ def submit_parallel_jobs(subexp_name: str, subexp_config: Dict[str, Any], global
     # Get dataset path
     dataset_csv = global_config['datasets'][subexp_config['dataset']]['input_csv']
     
-    print(f"Submitting {num_jobs} parallel jobs for subexperiment '{subexp_name}'")
+    if no_slurm:
+        print(f"Generating Python commands for {num_jobs} parallel jobs for subexperiment '{subexp_name}'")
+    else:
+        print(f"Submitting {num_jobs} parallel jobs for subexperiment '{subexp_name}'")
     print(f"Range: {range_type} {range_spec}")
     print(f"Results directory: {results_dir}")
     
     # Try to compute uniform distribution
     total_examples_in_range, range_start_offset, range_end_offset = get_total_examples_in_range(dataset_csv, range_type, range_spec)
     
-    # Generate SLURM script
+    # Generate SLURM script (still useful for reference even in no_slurm mode)
     slurm_script_content = generate_slurm_script(subexp_name, subexp_config, global_config)
     
     # Write SLURM script to file (save in reasoning_attacks_res directory)
-    reasoning_attacks_res_dir = "/scratch/gpfs/KOROLOVA/bt4811/usefatt/reasoning_attacks_res"
+    global_settings = global_config['global']
+    reasoning_attacks_res_dir = global_settings.get('home_dir', "/scratch/gpfs/KOROLOVA/bt4811/usefatt/reasoning_attacks_res")
     os.makedirs(reasoning_attacks_res_dir, exist_ok=True)
     slurm_script_path = os.path.join(reasoning_attacks_res_dir, f"run_{subexp_name}.slurm")
     with open(slurm_script_path, 'w') as f:
         f.write(slurm_script_content)
     
-    print(f"Generated SLURM script: {slurm_script_path}")
+    if not no_slurm:
+        print(f"Generated SLURM script: {slurm_script_path}")
     
     # Compute ranges for each job
     if total_examples_in_range > 0:
@@ -335,10 +425,45 @@ def submit_parallel_jobs(subexp_name: str, subexp_config: Dict[str, Any], global
                     job_end = end_idx
                 ranges_to_submit[job_id] = f"{job_start}:{job_end}"
     
-    # Submit jobs
+    # Submit jobs or generate Python commands
     slurm_job_ids = {}
     submitted_job_ids = []
     
+    if no_slurm:
+        # Generate Python commands instead of submitting SLURM jobs
+        print(f"\n{'='*80}")
+        print(f"PYTHON COMMANDS FOR {subexp_name} (Copy these to run in Colab or locally)")
+        print(f"{'='*80}\n")
+        
+        commands_file = os.path.join(reasoning_attacks_res_dir, f"{subexp_name}_commands.txt")
+        
+        with open(commands_file, 'w') as f:
+            f.write(f"# Python commands for subexperiment: {subexp_name}\n")
+            f.write(f"# Generated for {num_jobs} parallel jobs\n")
+            f.write(f"# Results directory: {results_dir}\n\n")
+            
+            for job_id, example_range in ranges_to_submit.items():
+                job_id_str = str(job_id)
+                print(f"\n{'─'*80}")
+                print(f"Job {job_id_str}: range {example_range}")
+                print(f"{'─'*80}")
+                
+                python_cmd = generate_python_command(subexp_name, subexp_config, global_config, example_range, job_id_str)
+                
+                print(f"\n{python_cmd}\n")
+                
+                f.write(f"# Job {job_id_str}: range {example_range}\n")
+                f.write(f"{python_cmd}\n\n")
+                submitted_job_ids.append(f"job_{job_id_str}")
+        
+        print(f"\n{'='*80}")
+        print(f"✓ Generated {len(ranges_to_submit)} Python commands")
+        print(f"Commands saved to: {commands_file}")
+        print(f"{'='*80}\n")
+        
+        return submitted_job_ids
+    
+    # Original SLURM submission code
     for job_id, example_range in ranges_to_submit.items():
         job_id_str = str(job_id)
         print(f"Job {job_id_str}: range {example_range}")
@@ -413,15 +538,23 @@ def main():
     if not validate_subexperiment(args.subexperiment, subexp_config, config):
         sys.exit(1)
     
+    # Check for no_slurm flag
+    no_slurm = config['global'].get('no_slurm', False)
+    
     # Submit jobs
     print(f"\n{'='*60}")
     print(f"Running subexperiment: {args.subexperiment}")
     print(f"Description: {subexp_config.get('description', 'No description')}")
+    if no_slurm:
+        print(f"Mode: NO SLURM (Python commands will be generated)")
     print(f"{'='*60}")
     
-    job_ids = submit_parallel_jobs(args.subexperiment, subexp_config, config, args.dry_run)
+    job_ids = submit_parallel_jobs(args.subexperiment, subexp_config, config, args.dry_run, no_slurm)
     
-    if args.dry_run:
+    if no_slurm:
+        print(f"\n✓ Generated {len(job_ids)} Python commands")
+        print("Copy the commands above or from the commands file to run in Colab or locally")
+    elif args.dry_run:
         print(f"\n[DRY RUN] Would have submitted {len(job_ids)} jobs")
     else:
         print(f"\n✓ Successfully submitted {len(job_ids)} jobs")

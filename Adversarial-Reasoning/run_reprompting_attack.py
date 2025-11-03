@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from convs import get_conv_attacker, get_init_msg, get_conv_feedbacker, get_conv_optimizer
 from utils import load_model_and_tokenizer, get_losses, get_target_responses_local
-from strings import gen_string_optimizer, gen_string_feedbacker_rand, extract_strings, extract_final_feedback, extract_new_prompt
+from strings import gen_string_optimizer, gen_string_feedbacker_rand, extract_strings, extract_final_feedback, extract_new_prompt, get_attacks_string_with_timeout, get_feedbacks, get_new_prompts
 from alg import GWW_dfs_min
 from fastchat.model import get_conversation_template
 
@@ -211,9 +211,20 @@ def run_reprompting_attack(
     memory: int,
     K: int,
     batch_size: int = 16,
-    device: str = "cuda:0"
+    device: str = "cuda:0",
+    use_attacker_api: bool = False,
+    attacker_api_model: str = None,
+    attacker_api_key: str = None,
+    attacker_api_base_url: str = None
 ):
-    """Run a single reprompting attack."""
+    """Run a single reprompting attack.
+    
+    Args:
+        use_attacker_api: If True, use OpenRouter API instead of local attacker model
+        attacker_api_model: Model identifier for OpenRouter (e.g., "mistralai/mixtral-8x7b-instruct")
+        attacker_api_key: OpenRouter API key
+        attacker_api_base_url: OpenRouter base URL (defaults to https://openrouter.ai/api/v1)
+    """
     
     # Initialize prompt
     prompt = get_init_msg(goal, target)
@@ -221,10 +232,24 @@ def run_reprompting_attack(
     # Initialize GWW algorithm
     prompt_class = GWW_dfs_min(memory)
     
-    # Generate initial attacks using local attacker model
+    # Generate initial attacks
     conv = get_conv_attacker(attacker_name, goal, target, prompt)
     
-    # Generate initial prompts using attacker model
+    if use_attacker_api:
+        # Use API for initial prompt generation
+        messages = get_attacks_string_with_timeout(
+            attacker_api_model,
+            conv,
+            batch_size,
+            use_openrouter=True,
+            api_key=attacker_api_key,
+            base_url=attacker_api_base_url
+        )
+        if not messages:
+            # Fallback: use original prompt
+            messages = [prompt] * batch_size
+    else:
+        # Use local attacker model for initial prompt generation
     attacker_conv = get_conversation_template(attacker_name)
     attacker_conv.sep2 = attacker_conv.sep2.strip()
     attacker_conv.set_system_message(conv.system_message)
@@ -249,8 +274,6 @@ def run_reprompting_attack(
             pad_token_id=attacker_tokenizer.pad_token_id,
             eos_token_id=attacker_tokenizer.eos_token_id
         )
-    
-    #print_gpu_memory("[After initial attacker generation] ")
     
     generated_texts = attacker_tokenizer.batch_decode(outputs, skip_special_tokens=False)
     
@@ -304,8 +327,23 @@ def run_reprompting_attack(
             'loss_min': iter_loss_min
         })
         
-        # Get feedbacks using local attacker model
+        # Get feedbacks
         #print_gpu_memory(f"[Iter {iter}: Before getting feedbacks] ")
+        if use_attacker_api:
+            final_feedbacks = get_feedbacks(
+                attacker_name,
+                attacker_api_model,
+                goal,
+                target,
+                messages,
+                idx,
+                K,
+                num_branches,
+                use_openrouter=True,
+                api_key=attacker_api_key,
+                base_url=attacker_api_base_url
+            )
+        else:
         final_feedbacks = get_feedbacks_local(
             attacker_name,
             attacker_model,
@@ -324,13 +362,36 @@ def run_reprompting_attack(
         collections_opt = [gen_string_optimizer(init_prompt, final_feedback) for final_feedback in final_feedbacks]
         convs_opt = [get_conv_attacker(attacker_name, goal, target, collection_opt) for collection_opt in collections_opt]
         #print_gpu_memory(f"[Iter {iter}: Before generating new prompts] ")
+        if use_attacker_api:
+            new_prompts = get_new_prompts(
+                convs_opt,
+                attacker_api_model,
+                use_openrouter=True,
+                api_key=attacker_api_key,
+                base_url=attacker_api_base_url
+            )
+        else:
         new_prompts = get_new_prompts_local(convs_opt, attacker_model, attacker_tokenizer, device)
         #print_gpu_memory(f"[Iter {iter}: After generating new prompts] ")
         
         # Evaluate new prompts
         for prompt_new in tqdm(new_prompts, desc=f"Iter {iter}: Evaluating new prompts", leave=False):
             conv = get_conv_attacker(attacker_name, goal, target, prompt_new)
-            # Generate new messages (simplified for offline)
+            
+            if use_attacker_api:
+                # Use API to generate new messages
+                new_messages = get_attacks_string_with_timeout(
+                    attacker_api_model,
+                    conv,
+                    batch_size,
+                    use_openrouter=True,
+                    api_key=attacker_api_key,
+                    base_url=attacker_api_base_url
+                )
+                if not new_messages:
+                    new_messages = [prompt_new] * batch_size
+            else:
+                # Generate new messages using local attacker model
             attacker_conv = get_conversation_template(attacker_name)
             attacker_conv.sep2 = attacker_conv.sep2.strip()
             attacker_conv.set_system_message(conv.system_message)
@@ -353,8 +414,6 @@ def run_reprompting_attack(
                     pad_token_id=attacker_tokenizer.pad_token_id,
                     eos_token_id=attacker_tokenizer.eos_token_id
                 )
-            
-            #print_gpu_memory(f"[Iter {iter}: After generating prompts for new_prompt variant] ")
             
             generated_texts = attacker_tokenizer.batch_decode(outputs, skip_special_tokens=False)
             new_messages = []
@@ -411,7 +470,7 @@ def run_reprompting_attack(
     }
 
 
-def worker_init(gpu_id: int, target_model_name: str, attacker_model_name: str, attacker_quantize: bool, attacker_quantize_bits: int, attacker_use_flash_attention: bool):
+def worker_init(gpu_id: int, target_model_name: str, attacker_model_name: str, attacker_quantize: bool, attacker_quantize_bits: int, attacker_use_flash_attention: bool, use_attacker_api: bool = False):
     """Initialize worker process with models and tokenizers on a specific GPU."""
     global _worker_target_model, _worker_target_tokenizer
     global _worker_attacker_model, _worker_attacker_tokenizer, _worker_attacker_name, _worker_gpu_id
@@ -441,7 +500,8 @@ def worker_init(gpu_id: int, target_model_name: str, attacker_model_name: str, a
         )
         print(f"[GPU {gpu_id}] ✓ Target model loaded successfully")
         
-        # Load attacker model on this GPU with optional quantization and flash attention
+        # Load attacker model only if not using API
+        if not use_attacker_api:
         flash_attention_status = "enabled" if attacker_use_flash_attention else "disabled"
         print(f"[GPU {gpu_id}] Loading attacker model: {attacker_model_name} (quantized: {attacker_quantize}, bits: {attacker_quantize_bits if attacker_quantize else 'N/A'}, flash_attention: {flash_attention_status})")
         attacker_kwargs = {}
@@ -460,6 +520,11 @@ def worker_init(gpu_id: int, target_model_name: str, attacker_model_name: str, a
         )
         _worker_attacker_name = "mixtral"
         print(f"[GPU {gpu_id}] ✓ Attacker model loaded successfully")
+        else:
+            print(f"[GPU {gpu_id}] Using OpenRouter API for attacker model (skipping local model loading)")
+            _worker_attacker_model = None
+            _worker_attacker_tokenizer = None
+            _worker_attacker_name = "mixtral"
         
         # Monitor memory after loading
         allocated = torch.cuda.memory_allocated(gpu_id) / 1e9
@@ -487,23 +552,30 @@ def run_attacks_on_gpu_worker(
     memory: int,
     K: int,
     batch_size: int,
-    verbose: bool
+    verbose: bool,
+    use_attacker_api: bool = False,
+    attacker_api_model: str = None,
+    attacker_api_key: str = None,
+    attacker_api_base_url: str = None
 ) -> list:
     """Worker function to initialize GPU and run attacks."""
     # Initialize models on this GPU
-    worker_init(gpu_id, target_model_name, attacker_model_name, attacker_quantize, attacker_quantize_bits, attacker_use_flash_attention)
+    worker_init(gpu_id, target_model_name, attacker_model_name, attacker_quantize, attacker_quantize_bits, attacker_use_flash_attention, use_attacker_api)
     
     # Run attacks on this GPU
-    return run_attacks_on_gpu(gpu_id, examples, num_iters, num_branches, memory, K, batch_size, verbose)
+    return run_attacks_on_gpu(gpu_id, examples, num_iters, num_branches, memory, K, batch_size, verbose, use_attacker_api, attacker_api_model, attacker_api_key, attacker_api_base_url)
 
 
-def run_attacks_on_gpu(gpu_id: int, examples: list, num_iters: int, num_branches: int, memory: int, K: int, batch_size: int, verbose: bool) -> list:
+def run_attacks_on_gpu(gpu_id: int, examples: list, num_iters: int, num_branches: int, memory: int, K: int, batch_size: int, verbose: bool, use_attacker_api: bool = False, attacker_api_model: str = None, attacker_api_key: str = None, attacker_api_base_url: str = None) -> list:
     """Run reprompting attacks on a specific GPU for assigned examples."""
     global _worker_target_model, _worker_target_tokenizer
     global _worker_attacker_model, _worker_attacker_tokenizer, _worker_attacker_name, _worker_gpu_id
     
-    if _worker_target_model is None or _worker_attacker_model is None:
-        raise RuntimeError(f"Worker models not initialized on GPU {gpu_id}")
+    if _worker_target_model is None:
+        raise RuntimeError(f"Worker target model not initialized on GPU {gpu_id}")
+    
+    if not use_attacker_api and (_worker_attacker_model is None or _worker_attacker_tokenizer is None):
+        raise RuntimeError(f"Worker attacker model not initialized on GPU {gpu_id}")
     
     device = f"cuda:{gpu_id}"
     results = []
@@ -536,7 +608,11 @@ def run_attacks_on_gpu(gpu_id: int, examples: list, num_iters: int, num_branches
                 memory=memory,
                 K=K,
                 batch_size=batch_size,
-                device=device
+                device=device,
+                use_attacker_api=use_attacker_api,
+                attacker_api_model=attacker_api_model,
+                attacker_api_key=attacker_api_key,
+                attacker_api_base_url=attacker_api_base_url
             )
             
             runtime = time.time() - start_time
@@ -593,12 +669,31 @@ def main():
     parser.add_argument("--wandb-entity", default="bogdan-turbal-y", help="W&B entity")
     parser.add_argument("--verbose", action="store_true", help="Verbose output")
     parser.add_argument("--wandb-offline", action="store_true", help="W&B offline mode")
-    parser.add_argument("--attacker-quantize", action="store_true", help="Enable quantization for attacker model")
+    parser.add_argument("--attacker-api", action="store_true", help="Use OpenRouter API for attacker model instead of local model")
+    parser.add_argument("--attacker-api-model", help="OpenRouter model identifier (e.g., mistralai/mixtral-8x7b-instruct)")
+    parser.add_argument("--attacker-api-key", help="OpenRouter API key (or set OPENROUTER_API_KEY env var)")
+    parser.add_argument("--attacker-api-base-url", default="https://openrouter.ai/api/v1", help="OpenRouter base URL")
+    parser.add_argument("--attacker-quantize", action="store_true", help="Enable quantization for attacker model (ignored if --attacker-api)")
     parser.add_argument("--attacker-quantize-bits", type=int, default=8, choices=[4, 8], help="Quantization bits for attacker model (4 or 8)")
-    parser.add_argument("--attacker-use-flash-attention", action="store_true", help="Enable Flash Attention 2 for attacker model")
+    parser.add_argument("--attacker-use-flash-attention", action="store_true", help="Enable Flash Attention 2 for attacker model (ignored if --attacker-api)")
     parser.add_argument("--num-gpus", type=int, default=1, help="Number of GPUs to use for parallel processing")
     
     args = parser.parse_args()
+    
+    # Set API key from environment if not provided via command line
+    if args.attacker_api and not args.attacker_api_key:
+        args.attacker_api_key = os.environ.get("OPENROUTER_API_KEY")
+        if not args.attacker_api_key:
+            print("Warning: --attacker-api is set but no API key provided (via --attacker-api-key or OPENROUTER_API_KEY env var)")
+    
+    # Validate API parameters if API mode is enabled
+    if args.attacker_api:
+        if not args.attacker_api_model:
+            print("Error: --attacker-api requires --attacker-api-model")
+            sys.exit(1)
+        if not args.attacker_api_key:
+            print("Error: --attacker-api requires --attacker-api-key or OPENROUTER_API_KEY environment variable")
+            sys.exit(1)
     
     # Load dataset
     df = load_dataset(args.input_csv, args.example_range, args.max_examples)
@@ -699,7 +794,11 @@ def main():
                     args.memory,
                     args.K,
                     args.batch_size,
-                    args.verbose
+                    args.verbose,
+                    args.attacker_api,
+                    args.attacker_api_model,
+                    args.attacker_api_key,
+                    args.attacker_api_base_url
                 )
                 for gpu_id in range(args.num_gpus)
                 if experiments_per_gpu[gpu_id]  # Only include GPUs with experiments
@@ -723,7 +822,7 @@ def main():
         
         # Initialize worker on GPU 0 (or CPU)
         if torch.cuda.is_available():
-            worker_init(0, args.model_name, args.attacker_model_name, args.attacker_quantize, args.attacker_quantize_bits, args.attacker_use_flash_attention)
+            worker_init(0, args.model_name, args.attacker_model_name, args.attacker_quantize, args.attacker_quantize_bits, args.attacker_use_flash_attention, args.attacker_api)
             device = "cuda:0"
         else:
             device = "cpu"
@@ -756,7 +855,11 @@ def main():
                     memory=args.memory,
                     K=args.K,
                     batch_size=args.batch_size,
-                    device=device
+                    device=device,
+                    use_attacker_api=args.attacker_api,
+                    attacker_api_model=args.attacker_api_model,
+                    attacker_api_key=args.attacker_api_key,
+                    attacker_api_base_url=args.attacker_api_base_url
                 )
                 
                 result['prompt_idx'] = idx

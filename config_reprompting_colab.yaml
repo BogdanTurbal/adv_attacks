@@ -1,0 +1,86 @@
+# Configuration for Reprompting Attacks (Google Colab Version)
+# This config is optimized for running in Google Colab without SLURM
+
+global:
+  netid: "colab_user"
+  scratch_dir: "/content"
+  home_dir: "/content/reasoning_attacks_res"
+  project_dir: "/content"
+  email: "user@example.com"
+  no_slurm: true  # Always true for Colab
+  
+  environment:
+    conda_env: ""  # Colab uses system Python, no conda needed
+    modules: []  # No module loading in Colab
+    
+    huggingface:
+      cache_dir: "/content/huggingface"
+      offline_mode: false  # Colab has internet access
+    
+    wandb:
+      entity: "bogdan-turbal-y"  # Change to your W&B entity
+      offline_mode: false  # Enable online mode for Colab
+    
+    openrouter:
+
+slurm_defaults:
+  nodes: 1
+  ntasks: 1
+  cpus_per_task: 2
+  mem: "16G"
+  time: "06:00:00"
+  gres: "gpu:1"
+  constraint: null
+  mail_type: "ALL"
+
+models:
+  deepseek_r1:
+    name: "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
+    dtype: "bfloat16"
+  
+  attacker_mixtral:
+    name: "mistralai/Mixtral-8x7B-Instruct-v0.1"
+    dtype: "bfloat16"
+
+datasets:
+  cot150:
+    input_csv: "Adversarial-Reasoning/reasoning_attacks/dataset/orthogonalized_outputs_cot150_2048.csv"
+
+subexperiments:
+  reprompting_base:
+    description: "Reprompting attack with default settings (Colab version)"
+    results_dir: "reprompting_base"
+    model: "deepseek_r1"
+    attacker_model: "attacker_mixtral"
+    dataset: "cot150"
+    
+    experiment:
+      num_iters: 15  # number of iterations for refinement
+      num_branches: 8  # number of generated children from each reasoning string
+      memory: 32  # buffer size for the search method
+      K: 2  # bucket size for adding randomness to the feedbacks
+      batch_size: 16
+      max_examples: -1
+      verbose: true
+      num_gpus: 1  # Colab typically has 1 GPU (or 0 for free tier)
+      attacker_api: true  # Use OpenRouter API instead of local attacker model (recommended for Colab)
+      attacker_quantize: true  # Enable quantization for attacker model (ignored if attacker_api is true)
+      attacker_quantize_bits: 4  # 4 or 8 bit quantization
+      attacker_use_flash_attention: false  # Enable Flash Attention 2 for attacker model (ignored if attacker_api is true)
+    
+    parallel:
+      num_jobs: 1  # Start with 1 job for Colab
+      range_type: "percentage"
+      range_spec: "0.0:0.1"  # Start with small range for testing
+    
+    slurm:
+      time: "00:59:00"
+      gres: "gpu:1"
+      nodes: 1
+      ntasks: 1
+      cpus_per_task: 2
+      mem: "16G"
+      constraint: null
+    
+    wandb_project: "reprompting_attacks_colab"
+

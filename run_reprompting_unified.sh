@@ -21,6 +21,10 @@ WANDB_PROJECT=""
 WANDB_ENTITY=""
 VERBOSE=false
 WANDB_OFFLINE=false
+ATTACKER_API=false
+ATTACKER_API_MODEL=""
+ATTACKER_API_KEY=""
+ATTACKER_API_BASE_URL="https://openrouter.ai/api/v1"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -108,6 +112,22 @@ while [[ $# -gt 0 ]]; do
             NUM_GPUS="$2"
             shift 2
             ;;
+        --attacker-api)
+            ATTACKER_API=true
+            shift
+            ;;
+        --attacker-api-model)
+            ATTACKER_API_MODEL="$2"
+            shift 2
+            ;;
+        --attacker-api-key)
+            ATTACKER_API_KEY="$2"
+            shift 2
+            ;;
+        --attacker-api-base-url)
+            ATTACKER_API_BASE_URL="$2"
+            shift 2
+            ;;
         *)
             echo "Unknown option $1"
             exit 1
@@ -180,6 +200,26 @@ if [ "$ATTACKER_USE_FLASH_ATTENTION" = true ]; then
     ATTACKER_USE_FLASH_ATTENTION_ARG="--attacker-use-flash-attention"
 fi
 
+ATTACKER_API_ARG=""
+if [ "$ATTACKER_API" = true ]; then
+    ATTACKER_API_ARG="--attacker-api"
+fi
+
+ATTACKER_API_MODEL_ARG=""
+if [ -n "$ATTACKER_API_MODEL" ]; then
+    ATTACKER_API_MODEL_ARG="--attacker-api-model $ATTACKER_API_MODEL"
+fi
+
+ATTACKER_API_KEY_ARG=""
+if [ -n "$ATTACKER_API_KEY" ]; then
+    ATTACKER_API_KEY_ARG="--attacker-api-key $ATTACKER_API_KEY"
+fi
+
+ATTACKER_API_BASE_URL_ARG=""
+if [ -n "$ATTACKER_API_BASE_URL" ]; then
+    ATTACKER_API_BASE_URL_ARG="--attacker-api-base-url $ATTACKER_API_BASE_URL"
+fi
+
 # WANDB Initialization (WANDB_RUN_DIR should be set by SLURM script, but set default if not)
 WANDB_RUN_DIR=${WANDB_RUN_DIR:-"/scratch/gpfs/KOROLOVA/bt4811/wandb_runs"}
 mkdir -p $WANDB_RUN_DIR
@@ -216,6 +256,10 @@ python Adversarial-Reasoning/run_reprompting_attack.py \
     --wandb-entity "$WANDB_ENTITY" \
     $VERBOSE_ARG \
     $WANDB_OFFLINE_ARG \
+    $ATTACKER_API_ARG \
+    $ATTACKER_API_MODEL_ARG \
+    $ATTACKER_API_KEY_ARG \
+    $ATTACKER_API_BASE_URL_ARG \
     $ATTACKER_QUANTIZE_ARG \
     $ATTACKER_QUANTIZE_BITS_ARG \
     $ATTACKER_USE_FLASH_ATTENTION_ARG \
