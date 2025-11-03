@@ -261,10 +261,10 @@ source ~/.bashrc
 # Create new conda environment in local scratch if it doesn't exist
 if [ ! -d "$LOCAL_CONDA_ENV" ]; then
     echo "Creating new conda environment in local scratch..."
-    conda create -y -p "$LOCAL_CONDA_ENV" python=3.11 || {
+    conda create -y -p "$LOCAL_CONDA_ENV" python=3.11 || {{
         echo "Conda create failed, trying with python 3.9..."
         conda create -y -p "$LOCAL_CONDA_ENV" python=3.9 || echo "Warning: Conda environment creation had issues"
-    }
+    }}
 else
     echo "Using existing conda environment: $LOCAL_CONDA_ENV"
 fi
@@ -272,12 +272,12 @@ fi
 # Activate the local conda environment
 echo "Activating conda environment: $LOCAL_CONDA_ENV"
 source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate "$LOCAL_CONDA_ENV" || {
+conda activate "$LOCAL_CONDA_ENV" || {{
     echo "Standard activation failed, trying direct activation..."
     export PATH="$LOCAL_CONDA_ENV/bin:$PATH"
     export CONDA_DEFAULT_ENV="$LOCAL_CONDA_ENV"
     export CONDA_PREFIX="$LOCAL_CONDA_ENV"
-}
+}}
 
 # Ensure conda also uses local scratch for its data
 export CONDA_PKGS_DIRS="$LOCAL_SCRATCH/.cache/conda/pkgs"
