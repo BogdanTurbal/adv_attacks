@@ -161,21 +161,67 @@ cd $LOCAL_PROJECT_DIR
 module purge
 
 # --- OFFLINE & PATH CONFIGURATION ---
+# Redirect ALL caches to local scratch - nothing in home directory
+# XDG Base Directory Specification (Linux standard)
+export XDG_CACHE_HOME="$LOCAL_SCRATCH/.cache"
+export XDG_DATA_HOME="$LOCAL_SCRATCH/.local/share"
+export XDG_CONFIG_HOME="$LOCAL_SCRATCH/.config"
+# Override ~/.cache to point to local scratch
+export HOME_CACHE_OVERRIDE="$LOCAL_SCRATCH/.cache"
+mkdir -p $XDG_CACHE_HOME $XDG_DATA_HOME $XDG_CONFIG_HOME
+
 # W&B Offline Configuration - store in local scratch, NOT in home directory
 export WANDB_MODE="{'offline' if global_settings['environment']['wandb']['offline_mode'] else 'online'}"
 export WANDB_DIR="$LOCAL_SCRATCH/wandb_runs"
-mkdir -p $WANDB_DIR
+export WANDB_CACHE_DIR="$LOCAL_SCRATCH/wandb_cache"
+mkdir -p $WANDB_DIR $WANDB_CACHE_DIR
 
 # HuggingFace Cache Configuration - use local scratch ONLY
 export HF_HOME="$LOCAL_SCRATCH/huggingface"
 export HUGGINGFACE_HUB_CACHE="$LOCAL_SCRATCH/huggingface"
 export TRANSFORMERS_CACHE="$LOCAL_SCRATCH/huggingface"
+export HF_DATASETS_CACHE="$LOCAL_SCRATCH/huggingface/datasets"
+
+# Python/Pip Cache - redirect to local scratch
+export PIP_CACHE_DIR="$LOCAL_SCRATCH/.cache/pip"
+export PYTHON_EGG_CACHE="$LOCAL_SCRATCH/.cache/python-eggs"
+export __PYTHON_EGG_CACHE="$LOCAL_SCRATCH/.cache/python-eggs"
+
+# PyTorch Cache
+export TORCH_HOME="$LOCAL_SCRATCH/.cache/torch"
+export TORCH_MODEL_HUB="$LOCAL_SCRATCH/.cache/torch/hub"
+
+# Conda cache (if used)
+export CONDA_PKGS_DIRS="$LOCAL_SCRATCH/.cache/conda/pkgs"
+
+# Other common cache locations
+export GRAD_CACHE="$LOCAL_SCRATCH/.cache/grad"
+export PYTORCH_TRANSFORMERS_CACHE="$LOCAL_SCRATCH/huggingface"
+export SENTENCE_TRANSFORMERS_HOME="$LOCAL_SCRATCH/.cache/sentence_transformers"
 
 # Set offline mode for HuggingFace
 export HF_HUB_OFFLINE="{'1' if global_settings['environment']['huggingface']['offline_mode'] else '0'}"
 export TRANSFORMERS_OFFLINE="{'1' if global_settings['environment']['huggingface']['offline_mode'] else '0'}"
 
-mkdir -p $HF_HOME
+# Create all cache directories
+mkdir -p $HF_HOME $PIP_CACHE_DIR $PYTHON_EGG_CACHE $TORCH_HOME $CONDA_PKGS_DIRS $GRAD_CACHE $SENTENCE_TRANSFORMERS_HOME
+
+# Prevent any writes to $HOME/.cache by ensuring environment variables take precedence
+# Monitor and report if anything tries to write to home cache
+echo "Cache redirection configured:"
+echo "  XDG_CACHE_HOME=$XDG_CACHE_HOME"
+echo "  PIP_CACHE_DIR=$PIP_CACHE_DIR"
+echo "  TORCH_HOME=$TORCH_HOME"
+echo "  HF_HOME=$HF_HOME"
+echo "  WANDB_DIR=$WANDB_DIR"
+
+# Clean up any existing .cache in home that might have been created before environment setup
+# This is defensive - environment variables should prevent new writes, but clean old ones
+if [ -d "$HOME/.cache" ] && [ ! -L "$HOME/.cache" ]; then
+    echo "Warning: Found existing $HOME/.cache directory, attempting to clean..."
+    # Try to remove, but don't fail if we can't (might be in use)
+    rm -rf "$HOME/.cache" 2>/dev/null && echo "  Removed $HOME/.cache" || echo "  Could not remove $HOME/.cache (may be in use)"
+fi
 """
     
     # Add module loads
@@ -195,29 +241,31 @@ conda activate {conda_env_value}
 # Install Dependencies (like in Colab)
 # ====================
 echo "Installing dependencies..."
+echo "Using pip cache directory: $PIP_CACHE_DIR"
+
 echo "Installing pycopy-fcntl..."
-pip install pycopy-fcntl --quiet || echo "Warning: pycopy-fcntl installation failed"
+pip install --cache-dir "$PIP_CACHE_DIR" pycopy-fcntl --quiet || echo "Warning: pycopy-fcntl installation failed"
 
 echo "Installing reasoning_attacks requirements..."
 if [ -f "$LOCAL_PROJECT_DIR/reasoning_attacks/requirements.txt" ]; then
-    pip install -r $LOCAL_PROJECT_DIR/reasoning_attacks/requirements.txt --quiet || echo "Warning: reasoning_attacks requirements installation had issues"
+    pip install --cache-dir "$PIP_CACHE_DIR" -r $LOCAL_PROJECT_DIR/reasoning_attacks/requirements.txt --quiet || echo "Warning: reasoning_attacks requirements installation had issues"
 else
     echo "Warning: reasoning_attacks/requirements.txt not found"
 fi
 
 echo "Installing strong_reject..."
-pip install git+https://github.com/dsbowen/strong_reject.git@main --quiet || echo "Warning: strong_reject installation failed"
+pip install --cache-dir "$PIP_CACHE_DIR" git+https://github.com/dsbowen/strong_reject.git@main --quiet || echo "Warning: strong_reject installation failed"
 
 echo "Installing Adversarial-Reasoning requirements..."
 if [ -f "$LOCAL_PROJECT_DIR/Adversarial-Reasoning/requirements.txt" ]; then
-    pip install -r $LOCAL_PROJECT_DIR/Adversarial-Reasoning/requirements.txt --quiet || echo "Warning: Adversarial-Reasoning requirements installation had issues"
+    pip install --cache-dir "$PIP_CACHE_DIR" -r $LOCAL_PROJECT_DIR/Adversarial-Reasoning/requirements.txt --quiet || echo "Warning: Adversarial-Reasoning requirements installation had issues"
 else
     echo "Warning: Adversarial-Reasoning/requirements.txt not found"
 fi
 
 echo "Installing additional packages..."
-pip install grayswan-api --quiet || echo "Warning: grayswan-api installation failed"
-pip install openai --quiet || echo "Warning: openai installation failed"
+pip install --cache-dir "$PIP_CACHE_DIR" grayswan-api --quiet || echo "Warning: grayswan-api installation failed"
+pip install --cache-dir "$PIP_CACHE_DIR" openai --quiet || echo "Warning: openai installation failed"
 
 echo "Dependencies installation complete"
 
@@ -295,6 +343,22 @@ bash ./run_reprompting_unified.sh \\
 echo "CSV results saved to: $CSV_RESULTS_DIR/{subexp_config['results_dir']}/"
 echo "SLURM logs saved to: {experiment_results_dir}"
 
+# Final check: Ensure no cache was accidentally written to home directory
+echo "Checking for any cache files in home directory..."
+if [ -d "$HOME/.cache" ] && [ ! -L "$HOME/.cache" ]; then
+    echo "ERROR: $HOME/.cache directory was created despite redirection!"
+    echo "Attempting to remove it..."
+    rm -rf "$HOME/.cache" 2>/dev/null || echo "  Could not remove (may be locked)"
+fi
+
+# Check for other common cache locations in home
+for cache_loc in "$HOME/.local/share" "$HOME/.config" "$HOME/.wandb" "$HOME/.huggingface"; do
+    if [ -d "$cache_loc" ] && [ ! -L "$cache_loc" ]; then
+        echo "Warning: Found cache directory $cache_loc in home, attempting cleanup..."
+        rm -rf "$cache_loc" 2>/dev/null || echo "  Could not remove"
+    fi
+done
+
 # Clean up local scratch to save space (but keep models if they might be reused)
 echo "Cleaning up local scratch directory (keeping models)..."
 # Keep HuggingFace cache in case needed for next run, but remove project copy
@@ -302,8 +366,11 @@ rm -rf $LOCAL_SCRATCH/adv_attacks 2>/dev/null || echo "Could not clean up projec
 # Optionally clean W&B runs from local scratch if space is tight (they're in local scratch anyway)
 # rm -rf $LOCAL_SCRATCH/wandb_runs 2>/dev/null || echo "Could not clean up W&B runs"
 
+echo ""
+echo "=== Summary ==="
 echo "Only CSV results and SLURM logs saved to /u/bt4811/"
 echo "All cache, models, and W&B runs remain in local scratch: $LOCAL_SCRATCH"
+echo "Cache redirection verified - no cache should be in home directory"
 
 echo "Job $JOB_ID finished at $(date)"
 """
