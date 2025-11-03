@@ -66,17 +66,17 @@ def print_gpu_memory(prefix=""):
 
 
 def get_feedbacks_local(name, model, tokenizer, goal, target, messages, idx, divs, num_branches, device):
-    """Get feedbacks using local model instead of API."""
+    """Get feedbacks using local model instead of API. Batched for efficiency."""
     from strings import gen_string_feedbacker_rand, extract_final_feedback
     
     convs = [
         get_conv_feedbacker(name, goal, target, gen_string_feedbacker_rand(messages, idx, divs), len(messages)//divs) 
         for _ in range(num_branches)
     ]
-    final_feedbacks = []
     
-    for conv in tqdm(convs, desc="Generating feedbacks", leave=False):
-        # Generate feedback using local model
+    # Batch all convs together for efficient generation
+    all_input_sequences = []
+    for conv in convs:
         conv_input = get_conversation_template(name)
         conv_input.sep2 = conv_input.sep2.strip()
         conv_input.set_system_message(conv.system_message)
@@ -87,22 +87,27 @@ def get_feedbacks_local(name, model, tokenizer, goal, target, messages, idx, div
             tokenize=False,
             add_generation_prompt=True
         )
-        input_ids = tokenizer(input_text, return_tensors="pt", padding=True).to(device)
-        
-        with torch.no_grad():
-            outputs = model.generate(
-                **input_ids,
-                max_new_tokens=512,
-                temperature=1.0,
-                top_p=0.9,
-                do_sample=True,
-                pad_token_id=tokenizer.pad_token_id,
-                eos_token_id=tokenizer.eos_token_id
-            )
-        
-        generated_text = tokenizer.decode(outputs[0], skip_special_tokens=False)
+        all_input_sequences.append(input_text)
+    
+    # Generate all at once in a single batch
+    input_ids = tokenizer(all_input_sequences, return_tensors="pt", padding=True).to(device)
+    
+    with torch.no_grad():
+        outputs = model.generate(
+            **input_ids,
+            max_new_tokens=512,
+            temperature=1.0,
+            top_p=0.9,
+            do_sample=True,
+            pad_token_id=tokenizer.pad_token_id,
+            eos_token_id=tokenizer.eos_token_id
+        )
+    
+    generated_texts = tokenizer.batch_decode(outputs, skip_special_tokens=False)
+    final_feedbacks = []
+    
+    for generated_text in generated_texts:
         generated_text = generated_text.replace("\\", "")
-        
         final_feedback = extract_final_feedback(generated_text)
         if final_feedback is not None:
             final_feedbacks.append(final_feedback)
@@ -111,13 +116,15 @@ def get_feedbacks_local(name, model, tokenizer, goal, target, messages, idx, div
 
 
 def get_new_prompts_local(convs, model, tokenizer, device):
-    """Get new prompts using local model instead of API."""
+    """Get new prompts using local model instead of API. Batched for efficiency."""
     from strings import extract_new_prompt
     
-    new_prompts = []
+    if not convs:
+        return []
     
-    for conv in tqdm(convs, desc="Generating new prompts", leave=False):
-        # Generate optimized prompt using local model
+    # Batch all convs together for efficient generation
+    all_input_sequences = []
+    for conv in convs:
         conv_input = get_conversation_template("mixtral")  # Use mixtral template
         conv_input.sep2 = conv_input.sep2.strip()
         conv_input.set_system_message(conv.system_message)
@@ -128,22 +135,27 @@ def get_new_prompts_local(convs, model, tokenizer, device):
             tokenize=False,
             add_generation_prompt=True
         )
-        input_ids = tokenizer(input_text, return_tensors="pt", padding=True).to(device)
-        
-        with torch.no_grad():
-            outputs = model.generate(
-                **input_ids,
-                max_new_tokens=512,
-                temperature=1.0,
-                top_p=0.9,
-                do_sample=True,
-                pad_token_id=tokenizer.pad_token_id,
-                eos_token_id=tokenizer.eos_token_id
-            )
-        
-        generated_text = tokenizer.decode(outputs[0], skip_special_tokens=False)
+        all_input_sequences.append(input_text)
+    
+    # Generate all at once in a single batch
+    input_ids = tokenizer(all_input_sequences, return_tensors="pt", padding=True).to(device)
+    
+    with torch.no_grad():
+        outputs = model.generate(
+            **input_ids,
+            max_new_tokens=512,
+            temperature=1.0,
+            top_p=0.9,
+            do_sample=True,
+            pad_token_id=tokenizer.pad_token_id,
+            eos_token_id=tokenizer.eos_token_id
+        )
+    
+    generated_texts = tokenizer.batch_decode(outputs, skip_special_tokens=False)
+    new_prompts = []
+    
+    for generated_text in generated_texts:
         generated_text = generated_text.replace("\\", "")
-        
         prompt = extract_new_prompt(generated_text)
         if prompt is not None:
             new_prompts.append(prompt)

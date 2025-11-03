@@ -200,34 +200,54 @@ def prompt_openrouter_multi(model_name, convs, api_key=None, base_url="https://o
         if api_key is None:
             raise ValueError("OpenRouter API key not provided and OPENROUTER_API_KEY environment variable not set")
     
-    client = OpenAI(
-        base_url=base_url,
-        api_key=api_key,
-    )
+    # Prepare messages for batch completion
+    messages_list = [conv.to_openai_api_messages() for conv in convs]
     
-    responses = []
+    # Use batched inference with litellm
+    # Store original API key and base_url to restore later if needed
+    original_api_key = os.environ.get("OPENROUTER_API_KEY")
+    original_api_base = getattr(litellm, 'api_base', None)
     
-    # Process each conversation sequentially (OpenRouter may support batch, but we'll do sequential for reliability)
-    for conv in convs:
-        messages = conv.to_openai_api_messages()
-        try:
-            completion = client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                temperature=1.0,
-                top_p=0.9,
-                extra_headers={
-                    "HTTP-Referer": "https://github.com",  # Optional but recommended
-                    "X-Title": "Adversarial Reasoning Attack",  # Optional
-                },
-            )
-            response_content = completion.choices[0].message.content
-            responses.append(response_content)
-        except Exception as e:
-            print(f"Error in OpenRouter API call: {e}")
-            responses.append("")  # Placeholder for failed request
-    
-    return responses
+    try:
+        # Temporarily set OpenRouter API key for litellm
+        os.environ["OPENROUTER_API_KEY"] = api_key
+        
+        # Use batched inference - litellm will handle parallel requests efficiently
+        # Configure litellm to use OpenRouter (OpenAI-compatible API)
+        outputs = litellm.batch_completion(
+            model=model_name,
+            messages=messages_list,
+            temperature=1.0,
+            top_p=0.9,
+            api_base=base_url,
+            api_key=api_key,
+            extra_headers={
+                "HTTP-Referer": "https://github.com",
+                "X-Title": "Adversarial Reasoning Attack",
+            },
+        )
+        
+        responses = []
+        for idx, output in enumerate(outputs):
+            try:
+                response_content = output["choices"][0]["message"].content
+                responses.append(response_content)
+            except Exception as e:
+                print(f"Error processing response {idx} in OpenRouter batch: {e}")
+                responses.append("")  # Placeholder for failed request
+        
+        return responses
+    except Exception as e:
+        print(f"Error in OpenRouter batch API call: {e}")
+        # Fallback to empty responses
+        return [""] * len(convs)
+    finally:
+        # Restore original API key if it was set
+        if original_api_key is not None:
+            os.environ["OPENROUTER_API_KEY"] = original_api_key
+        elif "OPENROUTER_API_KEY" in os.environ and original_api_key is None:
+            # Only delete if we added it
+            pass  # Keep it since it might be used elsewhere
 
 
 def send_query_function(address, convs, function_template, key, temperature=0.7, top_p = 0.9, seed=0, presence_penalty=0.0, frequency_penalty=0.0):
@@ -435,51 +455,119 @@ def get_losses(model, tokenizer, messages, target, model_name):
                 losses.append(loss.detach())
         
         elif "deepseek" in model_name.lower() or "r1" in model_name.lower():
-            # For DeepSeek-R1, compute loss only on tokens after </think>
-            # DeepSeek-R1 outputs reasoning in <think>...</think> tags, followed by the actual response
-            inputs = tokenizer([get_prompt_target(tokenizer, message, target) for message in messages], return_tensors="pt", padding=True, add_special_tokens=False).to(device=model.device)
-            batch_logits = model(input_ids=inputs.input_ids, attention_mask=inputs.attention_mask).logits
+            # For DeepSeek-R1: Generate actual responses, extract final answers after </think>, compute loss
+            # Step 1: Generate actual responses from DeepSeek (batched)
+            inputs_batch = [
+                [{"role": "user", "content": message}]
+                for message in messages
+            ]
+            
+            full_prompts = tokenizer.apply_chat_template(inputs_batch, tokenize=False, add_generation_prompt=True)
+            input_ids, attention_mask = tokenizer(full_prompts, return_tensors='pt', padding=True, add_special_tokens=False).to(device=model.device).values()
+            
+            # Generate responses in batch
+            with torch.no_grad():
+                output_ids = model.generate(
+                    input_ids=input_ids,
+                    max_new_tokens=250,
+                    do_sample=True,
+                    top_p=1.0,
+                    temperature=0.6,
+                    attention_mask=attention_mask,
+                    pad_token_id=tokenizer.pad_token_id,
+                    eos_token_id=tokenizer.eos_token_id
+                )
+            
+            # Slice off input tokens to get only generated tokens
+            if not model.config.is_encoder_decoder:
+                generated_ids = output_ids[:, input_ids.shape[1]:]
+            else:
+                generated_ids = output_ids
             
             # Token IDs for </think> (DeepSeek-R1 uses this marker for reasoning)
             think_end_tokens = tokenizer.encode("</think>", add_special_tokens=False)
+            think_end_tokens_tensor = torch.tensor(think_end_tokens, device=generated_ids.device)
             
-            for i, logits in enumerate(batch_logits):
-                input_ids_seq = inputs.input_ids[i]
+            # Step 2: Extract final answers after </think> from generated responses
+            # Step 3: Compute loss by comparing how well model predicts target given the prompt
+            # The loss measures prompt effectiveness: how likely is target given the prompt?
+            
+            # For each message, extract final answer and compute loss
+            for i in range(len(messages)):
+                gen_seq = generated_ids[i]
                 
-                # Find position of </think> in the sequence
+                # Find position of </think> in the generated sequence
                 think_end_pos = None
-                for j in range(len(input_ids_seq) - len(think_end_tokens) + 1):
-                    if torch.equal(input_ids_seq[j:j+len(think_end_tokens)], torch.tensor(think_end_tokens, device=input_ids_seq.device)):
+                for j in range(len(gen_seq) - len(think_end_tokens) + 1):
+                    if torch.equal(gen_seq[j:j+len(think_end_tokens)], think_end_tokens_tensor):
                         think_end_pos = j + len(think_end_tokens)
                         break
                 
-                if think_end_pos is None:
-                    # If </think> not found, compute loss on all output tokens (fallback)
-                    l1 = len(tokenizer(get_prompt_target(tokenizer, messages[i]), return_tensors="pt", padding=True, add_special_tokens=False).input_ids.squeeze())
-                    l2 = len(tokenizer(get_prompt_target(tokenizer, messages[i], target), return_tensors="pt", padding=True, add_special_tokens=False).input_ids.squeeze())
-                    loss_logits = logits[-(l2-l1)-1:-2]
-                    loss = crit(loss_logits, input_ids_seq[-(l2-l1):-1])
+                # Extract final answer tokens after </think>
+                if think_end_pos is not None:
+                    final_answer_ids = gen_seq[think_end_pos:]
                 else:
-                    # Compute loss only on tokens after </think>
-                    # Get the full sequence length
-                    seq_len = input_ids_seq.shape[0]
-                    # Only compute loss on tokens after think_end_pos
-                    if think_end_pos < seq_len - 1:
-                        loss_logits = logits[think_end_pos-1:-1]  # -1 because logits are shifted by 1
-                        loss_labels = input_ids_seq[think_end_pos:]
-                        # Truncate to match lengths if needed
-                        min_len = min(len(loss_logits), len(loss_labels))
-                        loss = crit(loss_logits[:min_len], loss_labels[:min_len])
+                    # If </think> not found, use all generated tokens as final answer
+                    final_answer_ids = gen_seq
+                
+                # Decode to get final answer text (for reference, though not directly used in loss computation)
+                final_answer_text = tokenizer.decode(final_answer_ids, skip_special_tokens=True)
+                print(f"Final answer text: {final_answer_text}")
+                # Step 3: Compute loss - measure how well the prompt leads to target generation
+                # We compute loss on how well model predicts target tokens given the prompt
+                # This measures the effectiveness of the prompt at eliciting the target response
+                
+                # Create prompt+target input for forward pass
+                prompt_target_text = get_prompt_target(tokenizer, messages[i], target)
+                prompt_target_input = tokenizer([prompt_target_text], return_tensors="pt", padding=True, add_special_tokens=False).to(device=model.device)
+                
+                with torch.no_grad():
+                    prompt_target_logits = model(input_ids=prompt_target_input.input_ids, attention_mask=prompt_target_input.attention_mask).logits
+                
+                # Find where target tokens start in the sequence
+                prompt_only_text = get_prompt_target(tokenizer, messages[i])
+                prompt_only_input = tokenizer([prompt_only_text], return_tensors="pt", padding=True, add_special_tokens=False).input_ids.to(device=model.device)
+                
+                l1 = prompt_only_input.shape[1]
+                l2 = prompt_target_input.input_ids.shape[1]
+                target_start_pos = l1
+                target_length = l2 - l1
+                
+                # Compute loss on target prediction
+                # This measures: given the prompt, how likely is the model to generate the target?
+                if target_length > 0 and target_start_pos > 0:
+                    target_pred_logits = prompt_target_logits[0, target_start_pos-1:target_start_pos-1+target_length]
+                    target_labels = prompt_target_input.input_ids[0, target_start_pos:target_start_pos+target_length]
+                    
+                    # Compute loss: lower loss = model is more likely to generate target given the prompt
+                    min_len = min(len(target_pred_logits), len(target_labels))
+                    if min_len > 0:
+                        loss = crit(target_pred_logits[:min_len], target_labels[:min_len])
                     else:
-                        # No tokens after reasoning marker, use very small loss
-                        loss = torch.tensor(0.0, device=model.device)
+                        loss = torch.tensor(float('inf'), device=model.device)
+                else:
+                    loss = torch.tensor(float('inf'), device=model.device)
                 
                 losses.append(loss.detach())
+                
+                # Clean up per-iteration
+                del prompt_target_logits, prompt_target_input, prompt_only_input
+            
+            # Clean up
+            del output_ids, generated_ids, input_ids, attention_mask
+            gc.collect()
+            torch.cuda.empty_cache()
                 
         losses= torch.tensor(losses).to(device = model.device)
         cen_losses = losses - torch.mean(losses)
         
-    gc.collect(); del batch_logits; torch.cuda.empty_cache()
+    gc.collect()
+    # Clean up batch_logits only if it exists (not used in DeepSeek branch)
+    try:
+        del batch_logits
+    except NameError:
+        pass  # batch_logits doesn't exist in DeepSeek branch, which is fine
+    torch.cuda.empty_cache()
         
     return losses, cen_losses
 
