@@ -189,26 +189,65 @@ def load_dataset(dataset_path: str, example_range: str = None, max_examples: int
     return df
 
 
-def extract_target_from_response(response: str, default_target: str = "Sure") -> str:
-    """Extract target string from response for reprompting attack."""
-    # Try to extract first sentence or first 50 characters
+def extract_target_from_response(response: str, tokenizer=None, default_target: str = "Sure", num_tokens_after_tag: int = 20) -> str:
+    """Extract target string from response for reprompting attack.
+    
+    Extracts: </think> + next num_tokens_after_tag tokens
+    
+    Args:
+        response: The full response string from the dataset
+        tokenizer: Optional tokenizer to use for token counting. If None, uses simple word-based approximation
+        default_target: Default target if extraction fails
+        num_tokens_after_tag: Number of tokens to include after the </think> tag (default: 20)
+    """
     if pd.isna(response) or not response:
         return default_target
-    #print(0)
-    # Remove reasoning tags if present
-    response_clean = response
-    if "</think>" in response_clean:
-        parts = response_clean.split("</think>", 1)
-        if len(parts) > 1:
-            response_clean = parts[1].strip()
-    #print(1)
-    # Take first 50 characters as target
-    target = response_clean[:50].strip()
-    #print(2)
-    if not target:
+    
+    tag = "</think>"
+    
+    # Find the tag in the response
+    if tag not in response:
+        # Fallback: return first 50 characters if tag not found
+        return response[:50].strip() if response.strip() else default_target
+    
+    # Split at the tag position
+    parts = response.split(tag, 1)
+    if len(parts) < 2:
         return default_target
-    #print(3)
-    return target
+    
+    # Get text after the tag
+    text_after_tag = parts[1]
+    
+    # Extract tag + next num_tokens_after_tag tokens
+    if tokenizer is not None:
+        # Use actual tokenizer for accurate token counting
+        try:
+            # Tokenize the text after the tag
+            tokens = tokenizer.encode(text_after_tag, add_special_tokens=False)
+            
+            # Take first num_tokens_after_tag tokens
+            tokens_to_include = tokens[:num_tokens_after_tag]
+            
+            # Decode back to text
+            target_after = tokenizer.decode(tokens_to_include, skip_special_tokens=False)
+            
+            # Combine tag + target text
+            target = tag + "\n" + target_after if target_after.strip() else tag
+        except Exception as e:
+            print(f"Warning: Tokenizer-based extraction failed: {e}, falling back to word-based method")
+            # Fallback to word-based method
+            words = text_after_tag.split()
+            words_to_include = words[:num_tokens_after_tag]
+            target_after = " ".join(words_to_include)
+            target = tag + "\n" + target_after if target_after.strip() else tag
+    else:
+        # Simple word-based approximation (assume ~1 word ≈ 1 token)
+        words = text_after_tag.split()
+        words_to_include = words[:num_tokens_after_tag]
+        target_after = " ".join(words_to_include)
+        target = tag + "\n" + target_after if target_after.strip() else tag
+    
+    return target.strip() if target.strip() else default_target
 
 
 def flatten_result(result):
@@ -505,6 +544,25 @@ def run_reprompting_attack(
         # Print current best loss and prompt for sanity check
         print(f"Iter {iter}: loss_mean={iter_loss_mean:.4f}, loss_min={iter_loss_min:.4f}, best_loss_overall={best_loss_overall:.4f}")
         print(f"  Best attack prompt so far: {best_prompt_overall[:200]}..." if len(best_prompt_overall) > 200 else f"  Best attack prompt so far: {best_prompt_overall}")
+        
+        # Generate output based on currently best prompt after each 5th iteration
+        if (iter + 1) % 5 == 0:
+            print(f"\n[Iter {iter}] Generating output using current best prompt (loss: {best_loss_overall:.4f})...")
+            try:
+                best_output = get_target_responses_local(model, tokenizer, [best_prompt_overall], max_n_tokens=1024)
+                if best_output and len(best_output) > 0:
+                    generated_text = best_output[0]
+                    # Truncate for display if too long
+                    display_text = generated_text[:500] + "..." if len(generated_text) > 500 else generated_text
+                    print(f"  Generated output: {display_text}")
+                    print(f"  Full output length: {len(generated_text)} characters")
+                else:
+                    print(f"  Warning: No output generated from best prompt")
+            except Exception as e:
+                print(f"  Error generating output: {e}")
+                import traceback
+                traceback.print_exc()
+            print()  # Empty line for readability
         
         # Get feedbacks
         #print_gpu_memory(f"[Iter {iter}: Before getting feedbacks] ")
@@ -828,7 +886,7 @@ def run_reprompting_attack(
     }
 
 
-def worker_init(gpu_id: int, target_model_name: str, attacker_model_name: str, attacker_quantize: bool, attacker_quantize_bits: int, attacker_use_flash_attention: bool, use_attacker_api: bool = False):
+def worker_init(gpu_id: int, target_model_name: str, attacker_model_name: str, attacker_quantize: bool, attacker_quantize_bits: int, attacker_use_flash_attention: bool, use_attacker_api: bool = False, target_quantize: bool = False, target_quantize_bits: int = 8):
     """Initialize worker process with models and tokenizers on a specific GPU."""
     global _worker_target_model, _worker_target_tokenizer
     global _worker_attacker_model, _worker_attacker_tokenizer, _worker_attacker_name, _worker_gpu_id
@@ -848,12 +906,15 @@ def worker_init(gpu_id: int, target_model_name: str, attacker_model_name: str, a
         torch.cuda.empty_cache()
         
         # Load target model on this GPU
-        print(f"[GPU {gpu_id}] Loading target model: {target_model_name}")
+        target_quantize_status = f"quantized ({target_quantize_bits}-bit)" if target_quantize else "not quantized"
+        print(f"[GPU {gpu_id}] Loading target model: {target_model_name} ({target_quantize_status})")
         _worker_target_model, _worker_target_tokenizer = load_model_and_tokenizer(
             target_model_name,
             low_cpu_mem_usage=True,
             cache_dir=os.environ.get("HF_HOME", "/u/bt4811/huggingface"),
             device=device,
+            quantize=target_quantize,
+            quantization_bits=target_quantize_bits,
             device_map=device  # Load entire model on this specific GPU
         )
         print(f"[GPU {gpu_id}] ✓ Target model loaded successfully")
@@ -915,11 +976,13 @@ def run_attacks_on_gpu_worker(
     attacker_api_model: str = None,
     attacker_api_key: str = None,
     attacker_api_base_url: str = None,
-    output_path: str = None
+    output_path: str = None,
+    target_quantize: bool = False,
+    target_quantize_bits: int = 8
 ) -> list:
     """Worker function to initialize GPU and run attacks."""
     # Initialize models on this GPU
-    worker_init(gpu_id, target_model_name, attacker_model_name, attacker_quantize, attacker_quantize_bits, attacker_use_flash_attention, use_attacker_api)
+    worker_init(gpu_id, target_model_name, attacker_model_name, attacker_quantize, attacker_quantize_bits, attacker_use_flash_attention, use_attacker_api, target_quantize, target_quantize_bits)
     
     # Run attacks on this GPU
     return run_attacks_on_gpu(gpu_id, examples, num_iters, num_branches, memory, K, batch_size, verbose, use_attacker_api, attacker_api_model, attacker_api_key, attacker_api_base_url, output_path)
@@ -944,7 +1007,7 @@ def run_attacks_on_gpu(gpu_id: int, examples: list, num_iters: int, num_branches
     for example_idx, (df_idx, row) in enumerate(examples):
         goal = row['forbidden_prompt']
         response = row.get('response', '')
-        target = extract_target_from_response(response)
+        target = extract_target_from_response(response, tokenizer=_worker_target_tokenizer, num_tokens_after_tag=20)
         
         if verbose:
             print(f"[GPU {gpu_id}] Processing example {df_idx} ({example_idx+1}/{len(examples)})")
@@ -1041,6 +1104,8 @@ def main():
     parser.add_argument("--attacker-quantize", action="store_true", help="Enable quantization for attacker model (ignored if --attacker-api)")
     parser.add_argument("--attacker-quantize-bits", type=int, default=8, choices=[4, 8], help="Quantization bits for attacker model (4 or 8)")
     parser.add_argument("--attacker-use-flash-attention", action="store_true", help="Enable Flash Attention 2 for attacker model (ignored if --attacker-api)")
+    parser.add_argument("--target-quantize", action="store_true", help="Enable quantization for target model (DeepSeek) to reduce memory usage")
+    parser.add_argument("--target-quantize-bits", type=int, default=8, choices=[4, 8], help="Quantization bits for target model (4 or 8)")
     parser.add_argument("--num-gpus", type=int, default=1, help="Number of GPUs to use for parallel processing")
     
     args = parser.parse_args()
@@ -1167,7 +1232,9 @@ def main():
                     args.attacker_api_model,
                     args.attacker_api_key,
                     args.attacker_api_base_url,
-                    output_path
+                    output_path,
+                    args.target_quantize,
+                    args.target_quantize_bits
                 )
                 for gpu_id in range(args.num_gpus)
                 if experiments_per_gpu[gpu_id]  # Only include GPUs with experiments
@@ -1191,7 +1258,7 @@ def main():
         
         # Initialize worker on GPU 0 (or CPU)
         if torch.cuda.is_available():
-            worker_init(0, args.model_name, args.attacker_model_name, args.attacker_quantize, args.attacker_quantize_bits, args.attacker_use_flash_attention, args.attacker_api)
+            worker_init(0, args.model_name, args.attacker_model_name, args.attacker_quantize, args.attacker_quantize_bits, args.attacker_use_flash_attention, args.attacker_api, args.target_quantize, args.target_quantize_bits)
             device = "cuda:0"
         else:
             device = "cpu"
@@ -1203,7 +1270,7 @@ def main():
         for idx, row in tqdm(df.iterrows(), total=len(df), desc="Processing examples"):
             goal = row['forbidden_prompt']
             response = row.get('response', '')
-            target = extract_target_from_response(response)
+            target = extract_target_from_response(response, tokenizer=_worker_target_tokenizer, num_tokens_after_tag=20)
             
             if args.verbose:
                 print(f"Processing example {idx+1}/{len(df)}")
@@ -1261,23 +1328,13 @@ def main():
     # Print final GPU memory
     #print_gpu_memory("[After attack loop completed] ")
     
-    # Save final results summary (incremental saves already done after each example)
-    # This final save ensures consistency and completeness
+    # Note: Results are already saved incrementally via save_result_to_csv() after each example
+    # No need to overwrite at the end - this preserves results from parallel jobs and prevents data loss
     if results:
-        # Flatten outputs for CSV
-        flat_results = []
-        for r in results:
-            flat_result = flatten_result(r)
-            flat_results.append(flat_result)
-        
-        results_df = pd.DataFrame(flat_results)
-        # Overwrite with complete results to ensure consistency
-        results_df.to_csv(output_path, index=False)
-        
         if args.verbose:
-            print(f"\nFinal results summary saved to {output_path}")
-            print(f"Processed {len(results)} examples total")
-            print("(Results were also saved incrementally after each example)")
+            print(f"\nProcessed {len(results)} examples total")
+            print(f"Results saved incrementally to {output_path} (append mode)")
+            print("Each result was saved immediately after processing to prevent data loss")
     else:
         print("No results to save")
 

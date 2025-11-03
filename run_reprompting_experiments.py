@@ -435,6 +435,8 @@ bash ./run_reprompting_unified.sh \\
     {"--attacker-quantize" if experiment_params.get('attacker_quantize', False) and not attacker_api else ""} \\
     {f"--attacker-quantize-bits {experiment_params.get('attacker_quantize_bits', 8)}" if experiment_params.get('attacker_quantize', False) and not attacker_api else ""} \\
     {"--attacker-use-flash-attention" if experiment_params.get('attacker_use_flash_attention', False) and not attacker_api else ""} \\
+    {"--target-quantize" if experiment_params.get('target_quantize', False) else ""} \\
+    {f"--target-quantize-bits {experiment_params.get('target_quantize_bits', 8)}" if experiment_params.get('target_quantize', False) else ""} \\
     --num-gpus {experiment_params.get('num_gpus', 4)}
 
 # CSV results are already saved directly to /u/bt4811/reasoning_attacks_res/ by run_reprompting_unified.sh
@@ -592,7 +594,12 @@ def generate_python_command(subexp_name: str, subexp_config: Dict[str, Any], glo
         if experiment_params.get('attacker_use_flash_attention', False):
             cmd_parts.append("--attacker-use-flash-attention")
     
-    cmd_parts.append(f"--num-gpus {experiment_params.get('num_gpus', 1)}")
+    # Add target quantization flags
+    if experiment_params.get('target_quantize', False):
+        cmd_parts.append("--target-quantize")
+        cmd_parts.append(f"--target-quantize-bits {experiment_params.get('target_quantize_bits', 8)}")
+    
+    cmd_parts.append(f"--num-gpus {experiment_params.get('num_gpus', 4)}")
     
     return " \\\n    ".join(cmd_parts)
 

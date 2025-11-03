@@ -108,6 +108,14 @@ while [[ $# -gt 0 ]]; do
             ATTACKER_USE_FLASH_ATTENTION=true
             shift
             ;;
+        --target-quantize)
+            TARGET_QUANTIZE=true
+            shift
+            ;;
+        --target-quantize-bits)
+            TARGET_QUANTIZE_BITS="$2"
+            shift 2
+            ;;
         --num-gpus)
             NUM_GPUS="$2"
             shift 2
@@ -200,6 +208,16 @@ if [ "$ATTACKER_USE_FLASH_ATTENTION" = true ]; then
     ATTACKER_USE_FLASH_ATTENTION_ARG="--attacker-use-flash-attention"
 fi
 
+TARGET_QUANTIZE_ARG=""
+if [ "$TARGET_QUANTIZE" = true ]; then
+    TARGET_QUANTIZE_ARG="--target-quantize"
+fi
+
+TARGET_QUANTIZE_BITS_ARG=""
+if [ -n "$TARGET_QUANTIZE_BITS" ]; then
+    TARGET_QUANTIZE_BITS_ARG="--target-quantize-bits $TARGET_QUANTIZE_BITS"
+fi
+
 ATTACKER_API_ARG=""
 if [ "$ATTACKER_API" = true ]; then
     ATTACKER_API_ARG="--attacker-api"
@@ -263,6 +281,8 @@ python Adversarial-Reasoning/run_reprompting_attack.py \
     $ATTACKER_QUANTIZE_ARG \
     $ATTACKER_QUANTIZE_BITS_ARG \
     $ATTACKER_USE_FLASH_ATTENTION_ARG \
+    $TARGET_QUANTIZE_ARG \
+    $TARGET_QUANTIZE_BITS_ARG \
     --num-gpus $NUM_GPUS
 
 # Check results

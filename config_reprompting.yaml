@@ -71,6 +71,8 @@ subexperiments:
       attacker_quantize: true  # Enable quantization for attacker model (ignored if attacker_api is true)
       attacker_quantize_bits: 4  # 4 or 8 bit quantization
       attacker_use_flash_attention: false  # Enable Flash Attention 2 for attacker model (ignored if attacker_api is true)
+      target_quantize: true  # Enable quantization for target model (DeepSeek) to reduce memory
+      target_quantize_bits: 8  # 4 or 8 bit quantization for target model
     
     parallel:
       num_jobs: 2
