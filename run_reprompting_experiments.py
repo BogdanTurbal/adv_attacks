@@ -270,39 +270,52 @@ echo "Using pip cache directory: $PIP_CACHE_DIR"
 
 echo "Installing pycopy-fcntl..."
 # Try to install, but continue even if it fails (may not be needed)
-pip install --cache-dir "$PIP_CACHE_DIR" pycopy-fcntl --no-deps --no-build-isolation 2>/dev/null || echo "Skipping pycopy-fcntl (not critical)"
+echo "=== Installing pycopy-fcntl ==="
+pip install --cache-dir "$PIP_CACHE_DIR" pycopy-fcntl --no-deps --no-build-isolation || echo "Skipping pycopy-fcntl (not critical)"
 
+echo ""
 echo "Installing reasoning_attacks requirements..."
 if [ -f "$LOCAL_PROJECT_DIR/reasoning_attacks/requirements.txt" ]; then
-    pip install --cache-dir "$PIP_CACHE_DIR" -r $LOCAL_PROJECT_DIR/reasoning_attacks/requirements.txt --quiet || echo "Warning: reasoning_attacks requirements installation had issues"
+    echo "=== Installing reasoning_attacks requirements ==="
+    pip install --cache-dir "$PIP_CACHE_DIR" -r $LOCAL_PROJECT_DIR/reasoning_attacks/requirements.txt || echo "Warning: reasoning_attacks requirements installation had issues"
 else
     echo "Warning: reasoning_attacks/requirements.txt not found"
 fi
 
+echo ""
 echo "Installing strong_reject..."
 # Install without checking dependencies or Python version requirements - just install it
 # Try normal install first
-if ! pip install --cache-dir "$PIP_CACHE_DIR" --no-deps --ignore-requires-python --no-build-isolation git+https://github.com/dsbowen/strong_reject.git@main 2>/dev/null; then
+echo "=== Installing strong_reject (attempt 1: direct install) ==="
+if ! pip install --cache-dir "$PIP_CACHE_DIR" --no-deps --ignore-requires-python --no-build-isolation git+https://github.com/dsbowen/strong_reject.git@main; then
+    echo ""
     echo "Normal install failed, trying alternative method..."
+    echo "=== Installing strong_reject (attempt 2: clone and install) ==="
     # Try cloning and installing directly
-    cd "$LOCAL_SCRATCH" && \
-    rm -rf strong_reject 2>/dev/null && \
-    git clone --depth 1 https://github.com/dsbowen/strong_reject.git 2>/dev/null && \
-    cd strong_reject && \
-    pip install --cache-dir "$PIP_CACHE_DIR" --no-deps --ignore-requires-python --no-build-isolation -e . 2>/dev/null && \
+    cd "$LOCAL_SCRATCH"
+    rm -rf strong_reject 2>/dev/null
+    git clone --depth 1 https://github.com/dsbowen/strong_reject.git
+    cd strong_reject
+    pip install --cache-dir "$PIP_CACHE_DIR" --no-deps --ignore-requires-python --no-build-isolation -e .
     cd "$LOCAL_PROJECT_DIR" || echo "Warning: strong_reject installation had issues, but continuing anyway"
 fi
 
+echo ""
 echo "Installing Adversarial-Reasoning requirements..."
 if [ -f "$LOCAL_PROJECT_DIR/Adversarial-Reasoning/requirements.txt" ]; then
-    pip install --cache-dir "$PIP_CACHE_DIR" -r $LOCAL_PROJECT_DIR/Adversarial-Reasoning/requirements.txt --quiet || echo "Warning: Adversarial-Reasoning requirements installation had issues"
+    echo "=== Installing Adversarial-Reasoning requirements ==="
+    pip install --cache-dir "$PIP_CACHE_DIR" -r $LOCAL_PROJECT_DIR/Adversarial-Reasoning/requirements.txt || echo "Warning: Adversarial-Reasoning requirements installation had issues"
 else
     echo "Warning: Adversarial-Reasoning/requirements.txt not found"
 fi
 
+echo ""
 echo "Installing additional packages..."
-pip install --cache-dir "$PIP_CACHE_DIR" grayswan-api --quiet || echo "Warning: grayswan-api installation failed"
-pip install --cache-dir "$PIP_CACHE_DIR" openai --quiet || echo "Warning: openai installation failed"
+echo "=== Installing grayswan-api ==="
+pip install --cache-dir "$PIP_CACHE_DIR" grayswan-api || echo "Warning: grayswan-api installation failed"
+echo ""
+echo "=== Installing openai ==="
+pip install --cache-dir "$PIP_CACHE_DIR" openai || echo "Warning: openai installation failed"
 
 echo "Dependencies installation complete"
 
