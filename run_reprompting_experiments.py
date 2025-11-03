@@ -89,13 +89,18 @@ def generate_slurm_script(subexp_name: str, subexp_config: Dict[str, Any], globa
     
     # Get results directory for this experiment (where SLURM logs will be saved)
     results_dir = subexp_config['results_dir']
-    experiment_results_dir = f"/scratch/gpfs/KOROLOVA/bt4811/usefatt/reasoning_attacks_res/{results_dir}"
+    experiment_results_dir = f"/u/bt4811/reasoning_attacks_res/{results_dir}"
     
     # Generate SLURM script
     # Build constraint line conditionally
     constraint_line = ""
     if 'constraint' in slurm_settings and slurm_settings['constraint'] is not None and slurm_settings['constraint'] != "":
         constraint_line = f"#SBATCH --constraint={slurm_settings['constraint']}\n"
+    
+    # Build cpus_per_task line conditionally (only if specified)
+    cpus_line = ""
+    if 'cpus_per_task' in slurm_settings and slurm_settings['cpus_per_task'] is not None:
+        cpus_line = f"#SBATCH --cpus-per-task={slurm_settings['cpus_per_task']}\n"
     
     script_content = f"""#!/bin/bash
 
@@ -105,8 +110,7 @@ def generate_slurm_script(subexp_name: str, subexp_config: Dict[str, Any], globa
 #SBATCH --job-name={subexp_name}
 #SBATCH --nodes={slurm_settings['nodes']}
 #SBATCH --ntasks={slurm_settings['ntasks']}
-#SBATCH --cpus-per-task={slurm_settings['cpus_per_task']}
-#SBATCH --mem={slurm_settings['mem']}
+{cpus_line}#SBATCH --mem={slurm_settings['mem']}
 #SBATCH --time={slurm_settings['time']}
 #SBATCH --gres={slurm_settings['gres']}
 #SBATCH --output={experiment_results_dir}/slurm_output_{subexp_name}_%j.out
@@ -120,17 +124,34 @@ NETID="{global_settings['netid']}"
 export HOME_DIR="{global_settings['home_dir']}"
 export SCRATCH_DIR="{global_settings['scratch_dir']}"
 export PROJECT_DIR="{global_settings['project_dir']}"
-export RESULTS_DIR="$SCRATCH_DIR/$NETID"
-
-# Create necessary directories
-mkdir -p $SCRATCH_DIR
-mkdir -p $RESULTS_DIR
+export RESULTS_DIR="{global_settings['home_dir']}"  # Results go to home directory (/u/bt4811)
 
 # Ensure experiment results directory exists (for SLURM output logs)
 mkdir -p {experiment_results_dir}
 
-# Change to project directory (usefatt)
-cd $PROJECT_DIR
+# ====================
+# Local Scratch Setup (Node-specific)
+# ====================
+# Use SLURM_TMPDIR if available (node-local scratch), otherwise use fallback
+if [ -n "$SLURM_TMPDIR" ]; then
+    LOCAL_SCRATCH="$SLURM_TMPDIR"
+elif [ -d "/local/scratch/$USER" ]; then
+    LOCAL_SCRATCH="/local/scratch/$USER"
+elif [ -d "/tmp/$USER" ]; then
+    LOCAL_SCRATCH="/tmp/$USER"
+else
+    LOCAL_SCRATCH="/tmp/adv_attacks_$$"
+fi
+
+mkdir -p $LOCAL_SCRATCH
+export LOCAL_SCRATCH_DIR="$LOCAL_SCRATCH"
+echo "Using local scratch directory: $LOCAL_SCRATCH"
+
+# Copy project to local scratch
+LOCAL_PROJECT_DIR="$LOCAL_SCRATCH/adv_attacks"
+echo "Copying project from $PROJECT_DIR to $LOCAL_PROJECT_DIR..."
+cp -r $PROJECT_DIR $LOCAL_PROJECT_DIR || { echo "Failed to copy project"; exit 1; }
+cd $LOCAL_PROJECT_DIR
 
 # ====================
 # Environment Setup
@@ -143,8 +164,9 @@ export WANDB_MODE="{'offline' if global_settings['environment']['wandb']['offlin
 export WANDB_DIR="$HOME_DIR/wandb_runs"
 mkdir -p $WANDB_DIR
 
-# HuggingFace Cache Configuration
-export HF_HOME="{global_settings['environment']['huggingface']['cache_dir']}"
+# HuggingFace Cache Configuration - use local scratch
+export HF_HOME="$LOCAL_SCRATCH/huggingface"
+export HUGGINGFACE_HUB_CACHE="$LOCAL_SCRATCH/huggingface"
 
 # Set offline mode for HuggingFace
 export HF_HUB_OFFLINE="{'1' if global_settings['environment']['huggingface']['offline_mode'] else '0'}"
@@ -157,18 +179,63 @@ mkdir -p $HF_HOME
     for module in global_settings['environment']['modules']:
         script_content += f"\nmodule load {module}"
     
+    # Use conda activate with the conda_env value (can be path or name)
+    conda_env_value = global_settings['environment']['conda_env']
+    
     script_content += f"""
 
 # Activate the Conda environment
 source ~/.bashrc
-conda activate {global_settings['environment']['conda_env']}
+conda activate {conda_env_value}
 
-# WANDB_RUN_DIR for this specific run
+# ====================
+# Install Dependencies (like in Colab)
+# ====================
+echo "Installing dependencies..."
+echo "Installing pycopy-fcntl..."
+pip install pycopy-fcntl --quiet || echo "Warning: pycopy-fcntl installation failed"
+
+echo "Installing reasoning_attacks requirements..."
+if [ -f "$LOCAL_PROJECT_DIR/reasoning_attacks/requirements.txt" ]; then
+    pip install -r $LOCAL_PROJECT_DIR/reasoning_attacks/requirements.txt --quiet || echo "Warning: reasoning_attacks requirements installation had issues"
+else
+    echo "Warning: reasoning_attacks/requirements.txt not found"
+fi
+
+echo "Installing strong_reject..."
+pip install git+https://github.com/dsbowen/strong_reject.git@main --quiet || echo "Warning: strong_reject installation failed"
+
+echo "Installing Adversarial-Reasoning requirements..."
+if [ -f "$LOCAL_PROJECT_DIR/Adversarial-Reasoning/requirements.txt" ]; then
+    pip install -r $LOCAL_PROJECT_DIR/Adversarial-Reasoning/requirements.txt --quiet || echo "Warning: Adversarial-Reasoning requirements installation had issues"
+else
+    echo "Warning: Adversarial-Reasoning/requirements.txt not found"
+fi
+
+echo "Installing additional packages..."
+pip install grayswan-api --quiet || echo "Warning: grayswan-api installation failed"
+pip install openai --quiet || echo "Warning: openai installation failed"
+
+echo "Dependencies installation complete"
+
+# ====================
+# Download Models
+# ====================
+echo "Downloading models to local scratch: $LOCAL_SCRATCH"
+cd $LOCAL_PROJECT_DIR
+# Temporarily disable offline mode for model downloads
+export HF_HUB_OFFLINE_SAVE="$HF_HUB_OFFLINE"
+export TRANSFORMERS_OFFLINE_SAVE="$TRANSFORMERS_OFFLINE"
+export HF_HUB_OFFLINE="0"
+export TRANSFORMERS_OFFLINE="0"
+python download.py "$LOCAL_SCRATCH" || { echo "Warning: Model download had issues, continuing anyway"; }
+# Restore offline mode if it was enabled
+export HF_HUB_OFFLINE="$HF_HUB_OFFLINE_SAVE"
+export TRANSFORMERS_OFFLINE="$TRANSFORMERS_OFFLINE_SAVE"
+
+# WANDB_RUN_DIR for this specific run - still in home directory
 export WANDB_RUN_DIR="$RESULTS_DIR/wandb_runs"
 mkdir -p $WANDB_RUN_DIR
-
-# HUGGINGFACE_HUB_CACHE (same as HF_HOME, already set above)
-export HUGGINGFACE_HUB_CACHE="{global_settings['environment']['huggingface']['cache_dir']}"
 
 # Note: HF_HUB_OFFLINE and TRANSFORMERS_OFFLINE are already set above before module loads
 
@@ -179,8 +246,10 @@ echo "Starting {subexp_name} experiment execution at $(date)"
 echo "Job ID: $JOB_ID"
 echo "Example range: $EXAMPLE_RANGE"
 echo "Results directory: $RESULTS_DIR"
+echo "Working directory: $(pwd)"
+echo "Local scratch: $LOCAL_SCRATCH"
 
-# Execute the main experiment steps (from usefatt directory, which contains run_reprompting_unified.sh)
+# Execute the main experiment steps (from local project directory)
 bash ./run_reprompting_unified.sh \\
     --example-range "$EXAMPLE_RANGE" \\
     --job-id "$JOB_ID" \\
@@ -208,10 +277,13 @@ bash ./run_reprompting_unified.sh \\
     {"--attacker-use-flash-attention" if experiment_params.get('attacker_use_flash_attention', False) and not attacker_api else ""} \\
     --num-gpus {experiment_params.get('num_gpus', 4)}
 
-# Copy results back to home directory
-echo "Copying results back to home directory..."
-cp -r $RESULTS_DIR/* $PROJECT_DIR/results/ 2>/dev/null || echo "No results to copy"
-cp -r $WANDB_RUN_DIR $PROJECT_DIR/ 2>/dev/null || echo "No W&B logs to copy"
+# Copy results back to home directory (results are already in $RESULTS_DIR which is /u/bt4811)
+echo "Results should already be in: $RESULTS_DIR"
+echo "Copying any additional results if needed..."
+
+# Clean up local scratch (optional, to save space)
+echo "Cleaning up local scratch directory..."
+rm -rf $LOCAL_SCRATCH/adv_attacks 2>/dev/null || echo "Could not clean up local scratch"
 
 echo "Job $JOB_ID finished at $(date)"
 """
@@ -346,7 +418,7 @@ def submit_parallel_jobs(subexp_name: str, subexp_config: Dict[str, Any], global
     
     # Write SLURM script to file (save in reasoning_attacks_res directory)
     global_settings = global_config['global']
-    reasoning_attacks_res_dir = global_settings.get('home_dir', "/scratch/gpfs/KOROLOVA/bt4811/usefatt/reasoning_attacks_res")
+    reasoning_attacks_res_dir = global_settings.get('home_dir', "/u/bt4811/reasoning_attacks_res")
     os.makedirs(reasoning_attacks_res_dir, exist_ok=True)
     slurm_script_path = os.path.join(reasoning_attacks_res_dir, f"run_{subexp_name}.slurm")
     with open(slurm_script_path, 'w') as f:

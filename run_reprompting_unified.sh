@@ -155,9 +155,9 @@ export PYTHONPATH="${PYTHONPATH}:$(pwd)/Adversarial-Reasoning"
 
 # Set results directory (inside reasoning_attacks_res)
 if [ -n "$RESULTS_DIR_PARAM" ]; then
-    BASE_RESULTS_DIR="/scratch/gpfs/KOROLOVA/bt4811/usefatt/reasoning_attacks_res/$RESULTS_DIR_PARAM"
+    BASE_RESULTS_DIR="/u/bt4811/reasoning_attacks_res/$RESULTS_DIR_PARAM"
 else
-    BASE_RESULTS_DIR="/scratch/gpfs/KOROLOVA/bt4811/usefatt/reasoning_attacks_res/results_default"
+    BASE_RESULTS_DIR="/u/bt4811/reasoning_attacks_res/results_default"
 fi
 
 if [ -n "$RESULTS_SUBDIR" ]; then
@@ -221,7 +221,7 @@ if [ -n "$ATTACKER_API_BASE_URL" ]; then
 fi
 
 # WANDB Initialization (WANDB_RUN_DIR should be set by SLURM script, but set default if not)
-WANDB_RUN_DIR=${WANDB_RUN_DIR:-"/scratch/gpfs/KOROLOVA/bt4811/wandb_runs"}
+WANDB_RUN_DIR=${WANDB_RUN_DIR:-"/u/bt4811/wandb_runs"}
 mkdir -p $WANDB_RUN_DIR
 python -c "import wandb; wandb.init(project='$WANDB_PROJECT', entity='$WANDB_ENTITY', dir='$WANDB_RUN_DIR')" 2>/dev/null || echo "WANDB initialization skipped (offline mode or error)"
 

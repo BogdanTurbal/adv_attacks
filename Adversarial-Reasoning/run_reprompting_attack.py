@@ -15,7 +15,6 @@ from pathlib import Path
 import multiprocessing as mp
 import time
 from math import ceil
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from tqdm import tqdm
 import fcntl
@@ -538,41 +537,75 @@ def run_reprompting_attack(
             new_prompts = get_new_prompts_local(convs_opt, attacker_model, attacker_tokenizer, device)
         #print_gpu_memory(f"[Iter {iter}: After generating new prompts] ")
         
-        # Evaluate new prompts - parallelized version
-        # Step 1: Generate all new_messages in parallel
+        # Evaluate new prompts - batched version
+        # Step 1: Generate all new_messages in a single batched API call
         prompt_new_messages_map = {}  # Maps prompt_new -> list of new_messages
         
         if use_attacker_api:
-            # For API calls, use ThreadPoolExecutor to parallelize
-            with ThreadPoolExecutor(max_workers=min(len(new_prompts), 10)) as executor:
-                futures = {
-                    executor.submit(
-                        generate_new_messages_for_prompt,
-                        prompt_new,
-                        attacker_name,
-                        goal,
-                        target,
-                        batch_size,
-                        use_attacker_api,
-                        attacker_api_model,
-                        attacker_api_key,
-                        attacker_api_base_url,
-                        None,  # attacker_model
-                        None,  # attacker_tokenizer
-                        device,
-                        iter
-                    ): prompt_new
-                    for prompt_new in new_prompts
-                }
+            # Batch all prompts together for efficient API calls
+            # Create conversations: for each prompt_new, create batch_size conversations
+            all_convs = []
+            prompt_to_indices = {}  # Maps prompt_new -> (start_idx, end_idx) in the batched results
+            
+            for idx, prompt_new in enumerate(new_prompts):
+                conv = get_conv_attacker(attacker_name, goal, target, prompt_new)
+                # Create batch_size copies of this conversation for diversity
+                all_convs.extend([conv] * batch_size)
                 
-                for future in tqdm(as_completed(futures), total=len(futures), desc=f"Iter {iter}: Generating messages (parallel)"):
-                    try:
-                        prompt_new, new_messages = future.result()
-                        prompt_new_messages_map[prompt_new] = new_messages
-                    except Exception as e:
-                        prompt_new = futures[future]
-                        print(f"Error generating messages for prompt: {e}")
-                        prompt_new_messages_map[prompt_new] = [prompt_new] * batch_size
+                # Track indices: this prompt will generate batch_size outputs
+                start_idx = idx * batch_size
+                end_idx = start_idx + batch_size
+                prompt_to_indices[prompt_new] = (start_idx, end_idx)
+            
+            # Generate all messages in one batched call using prompt_openrouter_multi
+            from utils import prompt_openrouter_multi
+            
+            try:
+                if attacker_api_base_url is None:
+                    attacker_api_base_url = "https://openrouter.ai/api/v1"
+                
+                generated_texts = prompt_openrouter_multi(
+                    attacker_api_model,
+                    all_convs,
+                    api_key=attacker_api_key,
+                    base_url=attacker_api_base_url
+                )
+                
+                # Extract messages and group by prompt_new
+                for prompt_new in tqdm(new_prompts, desc=f"Iter {iter}: Extracting messages from batch", leave=False):
+                    start_idx, end_idx = prompt_to_indices[prompt_new]
+                    prompt_generated_texts = generated_texts[start_idx:end_idx]
+                    
+                    new_messages = []
+                    for text in prompt_generated_texts:
+                        if text:  # Skip empty responses
+                            text = text.replace("\\", "")
+                            extracted = extract_strings(text)
+                            if extracted:
+                                new_messages.append(extracted)
+                            else:
+                                # Fallback
+                                if '"Prompt P":' in text or '"Prompt P" :' in text:
+                                    try:
+                                        if '"Prompt P":' in text:
+                                            prompt_part = text.split('"Prompt P":')[1].strip()
+                                        else:
+                                            prompt_part = text.split('"Prompt P" :')[1].strip()
+                                        prompt_part = prompt_part.strip('"').strip(',').strip('}').strip()
+                                        new_messages.append(prompt_part)
+                                    except:
+                                        new_messages.append(text)
+                    
+                    if not new_messages:
+                        new_messages = [prompt_new] * batch_size
+                    
+                    prompt_new_messages_map[prompt_new] = new_messages
+                    
+            except Exception as e:
+                print(f"Error in batched API generation: {e}")
+                # Fallback: assign original prompts
+                for prompt_new in new_prompts:
+                    prompt_new_messages_map[prompt_new] = [prompt_new] * batch_size
         else:
             # For local model, batch all prompts together for efficient generation
             # Step 1: Prepare all input sequences

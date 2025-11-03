@@ -3,20 +3,19 @@
 
 global:
   netid: "bt4811"
-  scratch_dir: "/scratch/gpfs/KOROLOVA"
-  home_dir: "/scratch/gpfs/KOROLOVA/bt4811/usefatt/reasoning_attacks_res"
-  project_dir: "/scratch/gpfs/KOROLOVA/bt4811/usefatt"
-  email: "bogdan.turbal.y@gmail.com"
+  scratch_dir: "/u/bt4811"
+  home_dir: "/u/bt4811/reasoning_attacks_res"
+  project_dir: "/scratch/bt4811/adv_attacks"
+  email: "bt4811@princeton.edu"
   no_slurm: false  # If true, generate Python commands instead of submitting SLURM jobs
   
   environment:
-    conda_env: "reasoning_env"
+    conda_env: "/scratch/bt4811/adv_attacks/attenv"
     modules:
-      - "anaconda3/2025.6"
-      - "cuda/12.4"
+      - "anaconda3"
     
     huggingface:
-      cache_dir: "/scratch/gpfs/KOROLOVA/huggingface"
+      cache_dir: "/scratch/bt4811/huggingface"
       offline_mode: true
     
     wandb:
@@ -24,12 +23,14 @@ global:
       offline_mode: true
     
     openrouter:
-
+      api_key: "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"
+      base_url: "https://openrouter.ai/api/v1"
+      model: "mistralai/mixtral-8x7b-instruct"
+      
 
 slurm_defaults:
   nodes: 1
   ntasks: 4
-  cpus_per_task: 8
   mem: "128G"
   time: "06:00:00"
   gres: "gpu:4"
@@ -72,17 +73,16 @@ subexperiments:
       attacker_use_flash_attention: false  # Enable Flash Attention 2 for attacker model (ignored if attacker_api is true)
     
     parallel:
-      num_jobs: 1
+      num_jobs: 2
       range_type: "percentage"
-      range_spec: "0.0:0.1"
+      range_spec: "0.0:1.0"
     
     slurm:
-      time: "00:59:00"
-      gres: "gpu:2"
+      time: "06:00:00"
+      gres: "gpu:8"
       nodes: 1
-      ntasks: 2
-      cpus_per_task: 1
-      mem: "128G"
+      ntasks: 8
+      mem: "256G"
       constraint: null  # Explicitly remove constraint from defaults
     
     wandb_project: "reprompting_attacks"
