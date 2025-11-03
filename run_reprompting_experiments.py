@@ -258,15 +258,35 @@ mkdir -p "$CONDA_PKGS_DIRS"
 source ~/.bashrc
 conda activate {conda_env_value}
 
-# Force pip to use local scratch - set user install directory
+# Force pip to use local scratch - prevent user installs completely
 export PIP_USER_DIR="$LOCAL_SCRATCH/.local"
 mkdir -p "$PIP_USER_DIR"
+# Unset PYTHONUSERBASE to prevent pip from using user directory
+unset PYTHONUSERBASE
+
+# CRITICAL: Prevent Python from seeing user site-packages to avoid corrupted package errors
+export PYTHONNOUSERSITE=1
+
+# Ensure pip installs to conda environment, not user directory
+# Clear any broken/corrupted packages that might cause version parsing errors
+echo "Cleaning up any corrupted pip metadata..."
+pip cache purge 2>/dev/null || true
+
+# Verify conda environment is active and pip will install there
+echo "Verifying conda environment..."
+which python
+python --version
+which pip
+pip --version
+echo "Python site-packages location (user site disabled):"
+python -c "import site; print('System packages:', site.getsitepackages()); print('User site disabled:', site.ENABLE_USER_SITE if hasattr(site, 'ENABLE_USER_SITE') else 'N/A')"
 
 # ====================
 # Install Dependencies (like in Colab)
 # ====================
 echo "Installing dependencies..."
 echo "Using pip cache directory: $PIP_CACHE_DIR"
+echo "Installing to conda environment (not user directory)"
 
 echo "Installing pycopy-fcntl..."
 # Try to install, but continue even if it fails (may not be needed)
@@ -277,7 +297,11 @@ echo ""
 echo "Installing reasoning_attacks requirements..."
 if [ -f "$LOCAL_PROJECT_DIR/reasoning_attacks/requirements.txt" ]; then
     echo "=== Installing reasoning_attacks requirements ==="
-    pip install --cache-dir "$PIP_CACHE_DIR" -r $LOCAL_PROJECT_DIR/reasoning_attacks/requirements.txt || echo "Warning: reasoning_attacks requirements installation had issues"
+    # Upgrade pip/setuptools first to avoid version parsing issues
+    pip install --cache-dir "$PIP_CACHE_DIR" --upgrade pip setuptools wheel 2>/dev/null || true
+    # Install without --user flag (installs to conda env)
+    # PYTHONNOUSERSITE=1 already set above prevents checking user packages
+    pip install --cache-dir "$PIP_CACHE_DIR" --no-warn-script-location -r $LOCAL_PROJECT_DIR/reasoning_attacks/requirements.txt 2>&1 | grep -v "WARNING:" || echo "Warning: reasoning_attacks requirements installation had issues"
 else
     echo "Warning: reasoning_attacks/requirements.txt not found"
 fi
@@ -287,7 +311,7 @@ echo "Installing strong_reject..."
 # Install without checking dependencies or Python version requirements - just install it
 # Try normal install first
 echo "=== Installing strong_reject (attempt 1: direct install) ==="
-if ! pip install --cache-dir "$PIP_CACHE_DIR" --no-deps --ignore-requires-python --no-build-isolation git+https://github.com/dsbowen/strong_reject.git@main; then
+if ! pip install --cache-dir "$PIP_CACHE_DIR" --no-deps --ignore-requires-python --no-build-isolation --no-warn-script-location git+https://github.com/dsbowen/strong_reject.git@main 2>&1 | grep -v "WARNING:"; then
     echo ""
     echo "Normal install failed, trying alternative method..."
     echo "=== Installing strong_reject (attempt 2: clone and install) ==="
@@ -296,7 +320,7 @@ if ! pip install --cache-dir "$PIP_CACHE_DIR" --no-deps --ignore-requires-python
     rm -rf strong_reject 2>/dev/null
     git clone --depth 1 https://github.com/dsbowen/strong_reject.git
     cd strong_reject
-    pip install --cache-dir "$PIP_CACHE_DIR" --no-deps --ignore-requires-python --no-build-isolation -e .
+    pip install --cache-dir "$PIP_CACHE_DIR" --no-deps --ignore-requires-python --no-build-isolation --no-warn-script-location -e . 2>&1 | grep -v "WARNING:"
     cd "$LOCAL_PROJECT_DIR" || echo "Warning: strong_reject installation had issues, but continuing anyway"
 fi
 
@@ -304,7 +328,7 @@ echo ""
 echo "Installing Adversarial-Reasoning requirements..."
 if [ -f "$LOCAL_PROJECT_DIR/Adversarial-Reasoning/requirements.txt" ]; then
     echo "=== Installing Adversarial-Reasoning requirements ==="
-    pip install --cache-dir "$PIP_CACHE_DIR" -r $LOCAL_PROJECT_DIR/Adversarial-Reasoning/requirements.txt || echo "Warning: Adversarial-Reasoning requirements installation had issues"
+    pip install --cache-dir "$PIP_CACHE_DIR" --no-warn-script-location -r $LOCAL_PROJECT_DIR/Adversarial-Reasoning/requirements.txt 2>&1 | grep -v "WARNING:" || echo "Warning: Adversarial-Reasoning requirements installation had issues"
 else
     echo "Warning: Adversarial-Reasoning/requirements.txt not found"
 fi
@@ -312,10 +336,10 @@ fi
 echo ""
 echo "Installing additional packages..."
 echo "=== Installing grayswan-api ==="
-pip install --cache-dir "$PIP_CACHE_DIR" grayswan-api || echo "Warning: grayswan-api installation failed"
+pip install --cache-dir "$PIP_CACHE_DIR" --no-warn-script-location grayswan-api 2>&1 | grep -v "WARNING:" || echo "Warning: grayswan-api installation failed"
 echo ""
 echo "=== Installing openai ==="
-pip install --cache-dir "$PIP_CACHE_DIR" openai || echo "Warning: openai installation failed"
+pip install --cache-dir "$PIP_CACHE_DIR" --no-warn-script-location openai 2>&1 | grep -v "WARNING:" || echo "Warning: openai installation failed"
 
 echo "Dependencies installation complete"
 
