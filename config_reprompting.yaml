@@ -66,7 +66,8 @@ subexperiments:
       batch_size: 16
       max_examples: -1
       verbose: true
-      num_gpus: 2 # Number of GPUs to use for parallel processing
+      #num_gpus: 2 # Number of GPUs to use for parallel processing (deprecated, use num_workers instead)
+      num_workers: 8 # Number of workers (should match SLURM ntasks)
       attacker_api: true  # If true, use OpenRouter API instead of local attacker model
       attacker_quantize: true  # Enable quantization for attacker model (ignored if attacker_api is true)
       attacker_quantize_bits: 4  # 4 or 8 bit quantization

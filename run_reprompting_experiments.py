@@ -437,7 +437,7 @@ bash ./run_reprompting_unified.sh \\
     {"--attacker-use-flash-attention" if experiment_params.get('attacker_use_flash_attention', False) and not attacker_api else ""} \\
     {"--target-quantize" if experiment_params.get('target_quantize', False) else ""} \\
     {f"--target-quantize-bits {experiment_params.get('target_quantize_bits', 8)}" if experiment_params.get('target_quantize', False) else ""} \\
-    --num-gpus {experiment_params.get('num_gpus', 4)}
+    --num-workers ${{SLURM_NTASKS:-{experiment_params.get('num_gpus', 4)}}}
 
 # CSV results are already saved directly to /u/bt4811/reasoning_attacks_res/ by run_reprompting_unified.sh
 # SLURM output logs are already saved to {experiment_results_dir} by SLURM
@@ -599,7 +599,9 @@ def generate_python_command(subexp_name: str, subexp_config: Dict[str, Any], glo
         cmd_parts.append("--target-quantize")
         cmd_parts.append(f"--target-quantize-bits {experiment_params.get('target_quantize_bits', 8)}")
     
-    cmd_parts.append(f"--num-gpus {experiment_params.get('num_gpus', 4)}")
+    # Use num_workers (or num_gpus as fallback) - in SLURM mode, this should match ntasks
+    num_workers = experiment_params.get('num_workers', experiment_params.get('num_gpus', 4))
+    cmd_parts.append(f"--num-workers {num_workers}")
     
     return " \\\n    ".join(cmd_parts)
 

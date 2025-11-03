@@ -120,6 +120,10 @@ while [[ $# -gt 0 ]]; do
             NUM_GPUS="$2"
             shift 2
             ;;
+        --num-workers)
+            NUM_WORKERS="$2"
+            shift 2
+            ;;
         --attacker-api)
             ATTACKER_API=true
             shift
@@ -156,7 +160,8 @@ MODEL_NAME=${MODEL_NAME:-"deepseek-ai/DeepSeek-R1-Distill-Llama-8B"}
 ATTACKER_MODEL_NAME=${ATTACKER_MODEL_NAME:-"mistralai/Mixtral-8x7B-Instruct-v0.1"}
 WANDB_PROJECT=${WANDB_PROJECT:-"reprompting_attacks"}
 WANDB_ENTITY=${WANDB_ENTITY:-"bogdan-turbal-y"}
-NUM_GPUS=${NUM_GPUS:-4}  # Default to 4 GPUs
+NUM_GPUS=${NUM_GPUS:-4}  # Default to 4 GPUs (deprecated, use NUM_WORKERS)
+NUM_WORKERS=${NUM_WORKERS:-${SLURM_NTASKS:-${NUM_GPUS:-4}}}  # Use NUM_WORKERS, fallback to SLURM_NTASKS, then NUM_GPUS
 
 # Add Adversarial-Reasoning to PYTHONPATH
 export PYTHONPATH="${PYTHONPATH}:$(pwd)/Adversarial-Reasoning"
@@ -283,7 +288,7 @@ python Adversarial-Reasoning/run_reprompting_attack.py \
     $ATTACKER_USE_FLASH_ATTENTION_ARG \
     $TARGET_QUANTIZE_ARG \
     $TARGET_QUANTIZE_BITS_ARG \
-    --num-gpus $NUM_GPUS
+    --num-workers $NUM_WORKERS
 
 # Check results
 echo "Final result check"

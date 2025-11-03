@@ -545,24 +545,23 @@ def run_reprompting_attack(
         print(f"Iter {iter}: loss_mean={iter_loss_mean:.4f}, loss_min={iter_loss_min:.4f}, best_loss_overall={best_loss_overall:.4f}")
         print(f"  Best attack prompt so far: {best_prompt_overall[:200]}..." if len(best_prompt_overall) > 200 else f"  Best attack prompt so far: {best_prompt_overall}")
         
-        # Generate output based on currently best prompt after each 5th iteration
-        if (iter + 1) % 5 == 0:
-            print(f"\n[Iter {iter}] Generating output using current best prompt (loss: {best_loss_overall:.4f})...")
-            try:
-                best_output = get_target_responses_local(model, tokenizer, [best_prompt_overall], max_n_tokens=1024)
-                if best_output and len(best_output) > 0:
-                    generated_text = best_output[0]
-                    # Truncate for display if too long
-                    display_text = generated_text[:500] + "..." if len(generated_text) > 500 else generated_text
-                    print(f"  Generated output: {display_text}")
-                    print(f"  Full output length: {len(generated_text)} characters")
-                else:
-                    print(f"  Warning: No output generated from best prompt")
-            except Exception as e:
-                print(f"  Error generating output: {e}")
-                import traceback
-                traceback.print_exc()
-            print()  # Empty line for readability
+        # Generate output based on currently best prompt after each iteration
+        print(f"\n[Iter {iter}] Generating output using current best prompt (loss: {best_loss_overall:.4f})...")
+        try:
+            best_output = get_target_responses_local(model, tokenizer, [best_prompt_overall], max_n_tokens=1024)
+            if best_output and len(best_output) > 0:
+                generated_text = best_output[0]
+                # Truncate for display if too long
+                display_text = generated_text[:500] + "..." if len(generated_text) > 500 else generated_text
+                print(f"  Generated output: {display_text}")
+                print(f"  Full output length: {len(generated_text)} characters")
+            else:
+                print(f"  Warning: No output generated from best prompt")
+        except Exception as e:
+            print(f"  Error generating output: {e}")
+            import traceback
+            traceback.print_exc()
+        print()  # Empty line for readability
         
         # Get feedbacks
         #print_gpu_memory(f"[Iter {iter}: Before getting feedbacks] ")
@@ -1106,9 +1105,23 @@ def main():
     parser.add_argument("--attacker-use-flash-attention", action="store_true", help="Enable Flash Attention 2 for attacker model (ignored if --attacker-api)")
     parser.add_argument("--target-quantize", action="store_true", help="Enable quantization for target model (DeepSeek) to reduce memory usage")
     parser.add_argument("--target-quantize-bits", type=int, default=8, choices=[4, 8], help="Quantization bits for target model (4 or 8)")
-    parser.add_argument("--num-gpus", type=int, default=1, help="Number of GPUs to use for parallel processing")
+    parser.add_argument("--num-gpus", type=int, default=None, help="Number of GPUs to use for parallel processing (deprecated: use SLURM_NTASKS or --num-workers)")
+    parser.add_argument("--num-workers", type=int, default=None, help="Number of workers (should match SLURM ntasks). If not provided, uses SLURM_NTASKS env var or falls back to num_gpus or 1")
     
     args = parser.parse_args()
+    
+    # Determine number of workers: prioritize --num-workers, then SLURM_NTASKS, then --num-gpus, then 1
+    if args.num_workers is not None:
+        args.num_workers = args.num_workers
+    elif 'SLURM_NTASKS' in os.environ:
+        args.num_workers = int(os.environ.get('SLURM_NTASKS', '1'))
+        print(f"Using SLURM_NTASKS={args.num_workers} for number of workers")
+    elif args.num_gpus is not None:
+        args.num_workers = args.num_gpus
+        print(f"Using --num-gpus={args.num_workers} for number of workers (consider using --num-workers or SLURM_NTASKS)")
+    else:
+        args.num_workers = 1
+        print("Using default: 1 worker (set SLURM_NTASKS or --num-workers to use multiple workers)")
     
     # Set API key from environment if not provided via command line
     if args.attacker_api and not args.attacker_api_key:
@@ -1130,25 +1143,27 @@ def main():
     
     # Check available GPUs
     available_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
-    if args.num_gpus > available_gpus:
-        print(f"⚠️  Warning: Requested {args.num_gpus} GPUs but only {available_gpus} are available.")
-        if available_gpus == 0:
-            print("Error: No CUDA GPUs available. Cannot run in multi-GPU mode.")
-            sys.exit(1)
-        args.num_gpus = available_gpus
-        print(f"Using {available_gpus} GPU(s) instead.")
+    if available_gpus == 0:
+        print("⚠️  No CUDA GPUs available, falling back to CPU (will be slow)")
+        # Still allow workers even without GPUs (for API-only mode)
+        if args.num_workers > 1:
+            print(f"Note: Requested {args.num_workers} workers but no GPUs available. Workers will run on CPU.")
     elif available_gpus > 0:
-        print(f"✓ CUDA available: {available_gpus} GPU(s) detected, using {args.num_gpus}")
+        print(f"✓ CUDA available: {available_gpus} GPU(s) detected")
+        # Check if we have enough GPUs for all workers
+        if args.num_workers > available_gpus:
+            print(f"⚠️  Warning: Requested {args.num_workers} workers but only {available_gpus} GPUs available.")
+            print(f"   Workers will share GPUs (round-robin assignment). This is OK if workers are CPU-bound (e.g., using API).")
     else:
         print("⚠️  No CUDA GPUs available, falling back to CPU (will be slow)")
-        args.num_gpus = 1
     
     if args.verbose:
         print(f"Loaded {len(df)} examples from {args.input_csv}")
         print(f"Target Model: {args.model_name}")
         print(f"Attacker Model: {args.attacker_model_name}")
-        for i in range(args.num_gpus):
-            if torch.cuda.is_available():
+        print(f"Number of workers: {args.num_workers}")
+        if torch.cuda.is_available():
+            for i in range(min(available_gpus, args.num_workers)):
                 props = torch.cuda.get_device_properties(i)
                 print(f"  GPU {i}: {props.name}, {props.total_memory / 1e9:.2f} GB")
     
@@ -1166,62 +1181,58 @@ def main():
     experiments = [(idx, row) for idx, row in df.iterrows()]
     total_examples = len(experiments)
     
-    # Distribute experiments across GPUs (uniform distribution like reasoning attacks)
-    if args.num_gpus > 1 and torch.cuda.is_available():
-        print(f"\nDistributing {total_examples} examples across {args.num_gpus} GPUs...")
+    # Distribute experiments across workers (one worker per SLURM task)
+    # Each worker gets assigned to a GPU (round-robin if more workers than GPUs)
+    if args.num_workers > 1:
+        print(f"\nDistributing {total_examples} examples across {args.num_workers} workers...")
         
-        # Compute uniform examples per GPU to ensure balanced distribution
-        # Similar to reasoning attacks: ensure most GPUs get the same number of examples
-        # We use ceil to ensure we have enough capacity, then distribute evenly
-        examples_per_gpu = ceil(total_examples / args.num_gpus)
+        experiments_per_worker = [[] for _ in range(args.num_workers)]
         
-        experiments_per_gpu = [[] for _ in range(args.num_gpus)]
-        
-        # Distribute examples uniformly across GPUs using round-robin
-        # This ensures the most balanced distribution: each GPU gets either 
-        # floor(total_examples/num_gpus) or ceil(total_examples/num_gpus) examples
-        # Priority: distribute evenly in round-robin fashion
-        base_examples = total_examples // args.num_gpus
-        extra_examples = total_examples % args.num_gpus
+        # Distribute examples uniformly across workers using round-robin
+        base_examples = total_examples // args.num_workers
+        extra_examples = total_examples % args.num_workers
         
         current_idx = 0
         
-        # Assign examples round-robin: each GPU gets base_examples, 
-        # then first 'extra_examples' GPUs get one more
-        for gpu_id in range(args.num_gpus):
-            examples_for_this_gpu = base_examples + (1 if gpu_id < extra_examples else 0)
-            for _ in range(examples_for_this_gpu):
+        # Assign examples round-robin: each worker gets base_examples, 
+        # then first 'extra_examples' workers get one more
+        for worker_id in range(args.num_workers):
+            examples_for_this_worker = base_examples + (1 if worker_id < extra_examples else 0)
+            for _ in range(examples_for_this_worker):
                 if current_idx < total_examples:
-                    experiments_per_gpu[gpu_id].append(experiments[current_idx])
+                    experiments_per_worker[worker_id].append(experiments[current_idx])
                     current_idx += 1
         
-        print(f"Starting {len(experiments)} experiments across {args.num_gpus} GPUs...")
-        for gpu_id in range(args.num_gpus):
-            exp_list = experiments_per_gpu[gpu_id]
+        print(f"Starting {len(experiments)} experiments across {args.num_workers} workers...")
+        for worker_id in range(args.num_workers):
+            exp_list = experiments_per_worker[worker_id]
             if len(exp_list) > 0:
                 example_ids = [exp[0] for exp in exp_list]
+                # Assign GPU: round-robin if more workers than GPUs
+                gpu_id_for_worker = worker_id % available_gpus if available_gpus > 0 else 0
                 if len(example_ids) <= 10:
-                    print(f"  GPU {gpu_id}: {len(exp_list)} experiments with example IDs: {example_ids}")
+                    print(f"  Worker {worker_id} (GPU {gpu_id_for_worker}): {len(exp_list)} experiments with example IDs: {example_ids}")
                 else:
-                    print(f"  GPU {gpu_id}: {len(exp_list)} experiments with example IDs: {example_ids[:5]} ... {example_ids[-5:]} (range {min(example_ids)}-{max(example_ids)})")
+                    print(f"  Worker {worker_id} (GPU {gpu_id_for_worker}): {len(exp_list)} experiments with example IDs: {example_ids[:5]} ... {example_ids[-5:]} (range {min(example_ids)}-{max(example_ids)})")
             else:
-                print(f"  GPU {gpu_id}: 0 experiments")
+                print(f"  Worker {worker_id}: 0 experiments")
         
         start_time = time.time()
         
-        # Create process pool with one process per GPU
-        print("\nCreating multiprocessing pool...")
-        with mp.Pool(processes=args.num_gpus) as pool:
-            # Prepare arguments for each GPU worker
-            gpu_args = [
+        # Create process pool with one process per worker (matching SLURM ntasks)
+        print(f"\nCreating multiprocessing pool with {args.num_workers} workers...")
+        with mp.Pool(processes=args.num_workers) as pool:
+            # Prepare arguments for each worker
+            # Each worker gets assigned a GPU (round-robin assignment)
+            worker_args = [
                 (
-                    gpu_id,
+                    worker_id % available_gpus if available_gpus > 0 else 0,  # GPU ID (round-robin if more workers than GPUs)
                     args.model_name,
                     args.attacker_model_name,
                     args.attacker_quantize,
                     args.attacker_quantize_bits,
                     args.attacker_use_flash_attention,
-                    experiments_per_gpu[gpu_id],
+                    experiments_per_worker[worker_id],
                     args.num_iters,
                     args.num_branches,
                     args.memory,
@@ -1236,21 +1247,21 @@ def main():
                     args.target_quantize,
                     args.target_quantize_bits
                 )
-                for gpu_id in range(args.num_gpus)
-                if experiments_per_gpu[gpu_id]  # Only include GPUs with experiments
+                for worker_id in range(args.num_workers)
+                if experiments_per_worker[worker_id]  # Only include workers with experiments
             ]
             
-            print(f"Running experiments on {len(gpu_args)} GPUs...")
+            print(f"Running experiments on {len(worker_args)} workers...")
             # Initialize workers and run experiments in parallel
-            all_results = pool.starmap(run_attacks_on_gpu_worker, gpu_args)
+            all_results = pool.starmap(run_attacks_on_gpu_worker, worker_args)
         
-        # Flatten results from all GPUs
+        # Flatten results from all workers
         results = []
-        for gpu_results in all_results:
-            results.extend(gpu_results)
+        for worker_results in all_results:
+            results.extend(worker_results)
         
         total_time = time.time() - start_time
-        print(f"\n✓ Completed {len(results)} experiments across {args.num_gpus} GPUs in {total_time:.1f}s")
+        print(f"\n✓ Completed {len(results)} experiments across {args.num_workers} workers in {total_time:.1f}s")
     
     else:
         # Single GPU or CPU mode (sequential processing)
