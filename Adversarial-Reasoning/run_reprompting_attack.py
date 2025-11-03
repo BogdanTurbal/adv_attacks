@@ -258,22 +258,22 @@ def run_reprompting_attack(
         # Generate batch of prompts
         messages = []
         attacker_inputs = attacker_tokenizer.apply_chat_template(
-            attacker_conv.to_openai_api_messages(), 
-            tokenize=False, 
-            add_generation_prompt=True
+        attacker_conv.to_openai_api_messages(), 
+        tokenize=False, 
+        add_generation_prompt=True
         )
         input_ids = attacker_tokenizer([attacker_inputs] * batch_size, return_tensors="pt", padding=True).to(device)
         
         with torch.no_grad():
             outputs = attacker_model.generate(
-                **input_ids,
-                max_new_tokens=512,
-                temperature=1.0,
-                top_p=0.9,
-                do_sample=True,
-                pad_token_id=attacker_tokenizer.pad_token_id,
-                eos_token_id=attacker_tokenizer.eos_token_id
-            )
+            **input_ids,
+            max_new_tokens=512,
+            temperature=1.0,
+            top_p=0.9,
+            do_sample=True,
+            pad_token_id=attacker_tokenizer.pad_token_id,
+            eos_token_id=attacker_tokenizer.eos_token_id
+        )
         
         generated_texts = attacker_tokenizer.batch_decode(outputs, skip_special_tokens=False)
         
@@ -344,7 +344,7 @@ def run_reprompting_attack(
                 base_url=attacker_api_base_url
             )
         else:
-        final_feedbacks = get_feedbacks_local(
+            final_feedbacks = get_feedbacks_local(
             attacker_name,
             attacker_model,
             attacker_tokenizer,
@@ -371,7 +371,7 @@ def run_reprompting_attack(
                 base_url=attacker_api_base_url
             )
         else:
-        new_prompts = get_new_prompts_local(convs_opt, attacker_model, attacker_tokenizer, device)
+            new_prompts = get_new_prompts_local(convs_opt, attacker_model, attacker_tokenizer, device)
         #print_gpu_memory(f"[Iter {iter}: After generating new prompts] ")
         
         # Evaluate new prompts
@@ -392,20 +392,20 @@ def run_reprompting_attack(
                     new_messages = [prompt_new] * batch_size
             else:
                 # Generate new messages using local attacker model
-            attacker_conv = get_conversation_template(attacker_name)
-            attacker_conv.sep2 = attacker_conv.sep2.strip()
-            attacker_conv.set_system_message(conv.system_message)
-            attacker_conv.append_message(attacker_conv.roles[0], prompt_new)
+                attacker_conv = get_conversation_template(attacker_name)
+                attacker_conv.sep2 = attacker_conv.sep2.strip()
+                attacker_conv.set_system_message(conv.system_message)
+                attacker_conv.append_message(attacker_conv.roles[0], prompt_new)
             
-            attacker_inputs = attacker_tokenizer.apply_chat_template(
+                attacker_inputs = attacker_tokenizer.apply_chat_template(
                 attacker_conv.to_openai_api_messages(),
                 tokenize=False,
                 add_generation_prompt=True
-            )
-            input_ids = attacker_tokenizer([attacker_inputs] * batch_size, return_tensors="pt", padding=True).to(device)
+                )
+                input_ids = attacker_tokenizer([attacker_inputs] * batch_size, return_tensors="pt", padding=True).to(device)
             
-            with torch.no_grad():
-                outputs = attacker_model.generate(
+                with torch.no_grad():
+                    outputs = attacker_model.generate(
                     **input_ids,
                     max_new_tokens=512,
                     temperature=1.0,
@@ -415,11 +415,11 @@ def run_reprompting_attack(
                     eos_token_id=attacker_tokenizer.eos_token_id
                 )
             
-            generated_texts = attacker_tokenizer.batch_decode(outputs, skip_special_tokens=False)
-            new_messages = []
-            from strings import extract_strings
-            for text in tqdm(generated_texts, desc=f"Iter {iter}: Extracting prompts from text", leave=False):
-                extracted = extract_strings(text)
+                generated_texts = attacker_tokenizer.batch_decode(outputs, skip_special_tokens=False)
+                new_messages = []
+                from strings import extract_strings
+                for text in tqdm(generated_texts, desc=f"Iter {iter}: Extracting prompts from text", leave=False):
+                    extracted = extract_strings(text)
                 if extracted:
                     new_messages.append(extracted)
                 else:
@@ -435,8 +435,8 @@ def run_reprompting_attack(
                         except:
                             new_messages.append(text)
             
-            if not new_messages:
-                new_messages = [prompt_new] * batch_size
+                if not new_messages:
+                    new_messages = [prompt_new] * batch_size
             
             #print_gpu_memory(f"[Iter {iter}: Before computing losses for new prompt] ")
             losses_new, _ = get_losses(model, tokenizer, new_messages, target, "deepseek")
@@ -502,24 +502,24 @@ def worker_init(gpu_id: int, target_model_name: str, attacker_model_name: str, a
         
         # Load attacker model only if not using API
         if not use_attacker_api:
-        flash_attention_status = "enabled" if attacker_use_flash_attention else "disabled"
-        print(f"[GPU {gpu_id}] Loading attacker model: {attacker_model_name} (quantized: {attacker_quantize}, bits: {attacker_quantize_bits if attacker_quantize else 'N/A'}, flash_attention: {flash_attention_status})")
-        attacker_kwargs = {}
-        if attacker_use_flash_attention:
-            attacker_kwargs['use_flash_attention_2'] = True
-        
-        _worker_attacker_model, _worker_attacker_tokenizer = load_model_and_tokenizer(
-            attacker_model_name,
-            low_cpu_mem_usage=True,
-            cache_dir=os.environ.get("HF_HOME", "/scratch/gpfs/KOROLOVA/huggingface"),
-            device=device,
-            quantize=attacker_quantize,
-            quantization_bits=attacker_quantize_bits,
-            device_map=device,  # Load entire model on this specific GPU
-            **attacker_kwargs
-        )
-        _worker_attacker_name = "mixtral"
-        print(f"[GPU {gpu_id}] ✓ Attacker model loaded successfully")
+            flash_attention_status = "enabled" if attacker_use_flash_attention else "disabled"
+            print(f"[GPU {gpu_id}] Loading attacker model: {attacker_model_name} (quantized: {attacker_quantize}, bits: {attacker_quantize_bits if attacker_quantize else 'N/A'}, flash_attention: {flash_attention_status})")
+            attacker_kwargs = {}
+            if attacker_use_flash_attention:
+                attacker_kwargs['use_flash_attention_2'] = True
+            
+            _worker_attacker_model, _worker_attacker_tokenizer = load_model_and_tokenizer(
+                attacker_model_name,
+                low_cpu_mem_usage=True,
+                cache_dir=os.environ.get("HF_HOME", "/scratch/gpfs/KOROLOVA/huggingface"),
+                device=device,
+                quantize=attacker_quantize,
+                quantization_bits=attacker_quantize_bits,
+                device_map=device,  # Load entire model on this specific GPU
+                **attacker_kwargs
+            )
+            _worker_attacker_name = "mixtral"
+            print(f"[GPU {gpu_id}] ✓ Attacker model loaded successfully")
         else:
             print(f"[GPU {gpu_id}] Using OpenRouter API for attacker model (skipping local model loading)")
             _worker_attacker_model = None

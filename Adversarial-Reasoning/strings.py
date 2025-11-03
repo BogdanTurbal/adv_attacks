@@ -50,7 +50,7 @@ def get_attacks_string(attacker_address, conv, batch, use_openrouter=False, api_
                 outputs = prompt_openrouter_batch(attacker_address, conv, batch - generated, api_key=api_key, base_url=base_url)
             else:
                 # Use TogetherAI (via litellm)
-            outputs = prompt_togetherai_batch(attacker_address, conv, batch - generated)    
+                outputs = prompt_togetherai_batch(attacker_address, conv, batch - generated)    
             
             for output in outputs:          
                 result = extract_strings(output)
@@ -115,7 +115,7 @@ def get_feedbacks(name, address, goal, target, messages, idx, divs, num_branches
                 base_url = "https://openrouter.ai/api/v1"
             outputs = prompt_openrouter_multi(address, convs_to_generate, api_key=api_key, base_url=base_url)
         else:
-        outputs = prompt_togetherai_multi(address, convs_to_generate)
+            outputs = prompt_togetherai_multi(address, convs_to_generate)
         
         indices_copy = np.copy(indices_to_generate)
         
@@ -160,7 +160,7 @@ def get_new_prompts(convs, address, use_openrouter=False, api_key=None, base_url
                 base_url = "https://openrouter.ai/api/v1"
             outputs = prompt_openrouter_multi(address, convs_to_generate, api_key=api_key, base_url=base_url)
         else:
-        outputs = prompt_togetherai_multi(address, convs_to_generate)
+            outputs = prompt_togetherai_multi(address, convs_to_generate)
 
         indices_copy = np.copy(indices_to_generate)
         

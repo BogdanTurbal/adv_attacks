@@ -44,7 +44,7 @@ models:
 
 datasets:
   cot150:
-    input_csv: "Adversarial-Reasoning/reasoning_attacks/dataset/orthogonalized_outputs_cot150_2048.csv"
+    input_csv: "reasoning_attacks/dataset/orthogonalized_outputs_cot150_2048.csv"
 
 subexperiments:
   reprompting_base:
