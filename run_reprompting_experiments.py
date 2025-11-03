@@ -79,8 +79,8 @@ def generate_slurm_script(subexp_name: str, subexp_config: Dict[str, Any], globa
     dataset_csv = global_config['datasets'][subexp_config['dataset']]['input_csv']
     
     # Get OpenRouter API settings from global config
+    # API key will be read from file in SLURM script, not from config
     openrouter_config = global_config['global'].get('environment', {}).get('openrouter', {})
-    openrouter_api_key = openrouter_config.get('api_key', '')
     openrouter_model = openrouter_config.get('model', 'mistralai/mixtral-8x7b-instruct')
     openrouter_base_url = openrouter_config.get('base_url', 'https://openrouter.ai/api/v1')
     
@@ -124,9 +124,11 @@ NETID="{global_settings['netid']}"
 export HOME_DIR="{global_settings['home_dir']}"
 export SCRATCH_DIR="{global_settings['scratch_dir']}"
 export PROJECT_DIR="{global_settings['project_dir']}"
-export RESULTS_DIR="{global_settings['home_dir']}"  # Results go to home directory (/u/bt4811)
+# Only CSV results and SLURM logs go to home directory
+export RESULTS_DIR="{global_settings['home_dir']}/reasoning_attacks_res"
+export CSV_RESULTS_DIR="{global_settings['home_dir']}/reasoning_attacks_res"
 
-# Ensure experiment results directory exists (for SLURM output logs)
+# Ensure experiment results directory exists (for SLURM output logs and CSV results)
 mkdir -p {experiment_results_dir}
 
 # ====================
@@ -150,7 +152,7 @@ echo "Using local scratch directory: $LOCAL_SCRATCH"
 # Copy project to local scratch
 LOCAL_PROJECT_DIR="$LOCAL_SCRATCH/adv_attacks"
 echo "Copying project from $PROJECT_DIR to $LOCAL_PROJECT_DIR..."
-cp -r $PROJECT_DIR $LOCAL_PROJECT_DIR || { echo "Failed to copy project"; exit 1; }
+cp -r $PROJECT_DIR $LOCAL_PROJECT_DIR || {{ echo "Failed to copy project"; exit 1; }}
 cd $LOCAL_PROJECT_DIR
 
 # ====================
@@ -159,14 +161,15 @@ cd $LOCAL_PROJECT_DIR
 module purge
 
 # --- OFFLINE & PATH CONFIGURATION ---
-# W&B Offline Configuration
+# W&B Offline Configuration - store in local scratch, NOT in home directory
 export WANDB_MODE="{'offline' if global_settings['environment']['wandb']['offline_mode'] else 'online'}"
-export WANDB_DIR="$HOME_DIR/wandb_runs"
+export WANDB_DIR="$LOCAL_SCRATCH/wandb_runs"
 mkdir -p $WANDB_DIR
 
-# HuggingFace Cache Configuration - use local scratch
+# HuggingFace Cache Configuration - use local scratch ONLY
 export HF_HOME="$LOCAL_SCRATCH/huggingface"
 export HUGGINGFACE_HUB_CACHE="$LOCAL_SCRATCH/huggingface"
+export TRANSFORMERS_CACHE="$LOCAL_SCRATCH/huggingface"
 
 # Set offline mode for HuggingFace
 export HF_HUB_OFFLINE="{'1' if global_settings['environment']['huggingface']['offline_mode'] else '0'}"
@@ -228,14 +231,24 @@ export HF_HUB_OFFLINE_SAVE="$HF_HUB_OFFLINE"
 export TRANSFORMERS_OFFLINE_SAVE="$TRANSFORMERS_OFFLINE"
 export HF_HUB_OFFLINE="0"
 export TRANSFORMERS_OFFLINE="0"
-python download.py "$LOCAL_SCRATCH" || { echo "Warning: Model download had issues, continuing anyway"; }
+python download.py "$LOCAL_SCRATCH" || {{ echo "Warning: Model download had issues, continuing anyway"; }}
 # Restore offline mode if it was enabled
 export HF_HUB_OFFLINE="$HF_HUB_OFFLINE_SAVE"
 export TRANSFORMERS_OFFLINE="$TRANSFORMERS_OFFLINE_SAVE"
 
-# WANDB_RUN_DIR for this specific run - still in home directory
-export WANDB_RUN_DIR="$RESULTS_DIR/wandb_runs"
+# WANDB_RUN_DIR for this specific run - use local scratch, NOT home directory
+export WANDB_RUN_DIR="$LOCAL_SCRATCH/wandb_runs"
 mkdir -p $WANDB_RUN_DIR
+
+# Read OpenRouter API key from file
+OPENROUTER_API_KEY_FILE="/u/bt4811/openrapi.txt"
+if [ -f "$OPENROUTER_API_KEY_FILE" ]; then
+    export OPENROUTER_API_KEY=$(cat "$OPENROUTER_API_KEY_FILE" | tr -d '[:space:]')
+    echo "OpenRouter API key loaded from $OPENROUTER_API_KEY_FILE"
+else
+    echo "Warning: OpenRouter API key file not found at $OPENROUTER_API_KEY_FILE"
+    export OPENROUTER_API_KEY=""
+fi
 
 # Note: HF_HUB_OFFLINE and TRANSFORMERS_OFFLINE are already set above before module loads
 
@@ -270,20 +283,27 @@ bash ./run_reprompting_unified.sh \\
     {"--wandb-offline" if global_settings['environment']['wandb']['offline_mode'] else ""} \\
     {"--attacker-api" if attacker_api else ""} \\
     {f"--attacker-api-model {openrouter_model}" if attacker_api else ""} \\
-    {f"--attacker-api-key {openrouter_api_key}" if attacker_api else ""} \\
+    {f"--attacker-api-key $OPENROUTER_API_KEY" if attacker_api else ""} \\
     {f"--attacker-api-base-url {openrouter_base_url}" if attacker_api else ""} \\
     {"--attacker-quantize" if experiment_params.get('attacker_quantize', False) and not attacker_api else ""} \\
     {f"--attacker-quantize-bits {experiment_params.get('attacker_quantize_bits', 8)}" if experiment_params.get('attacker_quantize', False) and not attacker_api else ""} \\
     {"--attacker-use-flash-attention" if experiment_params.get('attacker_use_flash_attention', False) and not attacker_api else ""} \\
     --num-gpus {experiment_params.get('num_gpus', 4)}
 
-# Copy results back to home directory (results are already in $RESULTS_DIR which is /u/bt4811)
-echo "Results should already be in: $RESULTS_DIR"
-echo "Copying any additional results if needed..."
+# CSV results are already saved directly to /u/bt4811/reasoning_attacks_res/ by run_reprompting_unified.sh
+# SLURM output logs are already saved to {experiment_results_dir} by SLURM
+echo "CSV results saved to: $CSV_RESULTS_DIR/{subexp_config['results_dir']}/"
+echo "SLURM logs saved to: {experiment_results_dir}"
 
-# Clean up local scratch (optional, to save space)
-echo "Cleaning up local scratch directory..."
-rm -rf $LOCAL_SCRATCH/adv_attacks 2>/dev/null || echo "Could not clean up local scratch"
+# Clean up local scratch to save space (but keep models if they might be reused)
+echo "Cleaning up local scratch directory (keeping models)..."
+# Keep HuggingFace cache in case needed for next run, but remove project copy
+rm -rf $LOCAL_SCRATCH/adv_attacks 2>/dev/null || echo "Could not clean up project from local scratch"
+# Optionally clean W&B runs from local scratch if space is tight (they're in local scratch anyway)
+# rm -rf $LOCAL_SCRATCH/wandb_runs 2>/dev/null || echo "Could not clean up W&B runs"
+
+echo "Only CSV results and SLURM logs saved to /u/bt4811/"
+echo "All cache, models, and W&B runs remain in local scratch: $LOCAL_SCRATCH"
 
 echo "Job $JOB_ID finished at $(date)"
 """

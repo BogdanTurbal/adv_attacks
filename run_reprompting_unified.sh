@@ -220,8 +220,8 @@ if [ -n "$ATTACKER_API_BASE_URL" ]; then
     ATTACKER_API_BASE_URL_ARG="--attacker-api-base-url $ATTACKER_API_BASE_URL"
 fi
 
-# WANDB Initialization (WANDB_RUN_DIR should be set by SLURM script, but set default if not)
-WANDB_RUN_DIR=${WANDB_RUN_DIR:-"/u/bt4811/wandb_runs"}
+# WANDB Initialization (WANDB_RUN_DIR should be set by SLURM script to local scratch, but set default if not)
+WANDB_RUN_DIR=${WANDB_RUN_DIR:-"/tmp/wandb_runs"}
 mkdir -p $WANDB_RUN_DIR
 python -c "import wandb; wandb.init(project='$WANDB_PROJECT', entity='$WANDB_ENTITY', dir='$WANDB_RUN_DIR')" 2>/dev/null || echo "WANDB initialization skipped (offline mode or error)"
 
