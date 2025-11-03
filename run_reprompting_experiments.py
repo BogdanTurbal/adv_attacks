@@ -208,21 +208,37 @@ export TRANSFORMERS_OFFLINE="{'1' if global_settings['environment']['huggingface
 # Create all cache directories
 mkdir -p $HF_HOME $PIP_CACHE_DIR $PYTHON_EGG_CACHE $TORCH_HOME $CONDA_PKGS_DIRS $GRAD_CACHE $SENTENCE_TRANSFORMERS_HOME
 
-# Prevent any writes to $HOME/.cache by ensuring environment variables take precedence
+# Prevent any writes to $HOME/.cache and $HOME/.local by ensuring environment variables take precedence
 # Monitor and report if anything tries to write to home cache
 echo "Cache redirection configured:"
 echo "  XDG_CACHE_HOME=$XDG_CACHE_HOME"
+echo "  XDG_DATA_HOME=$XDG_DATA_HOME"
+echo "  XDG_CONFIG_HOME=$XDG_CONFIG_HOME"
 echo "  PIP_CACHE_DIR=$PIP_CACHE_DIR"
 echo "  TORCH_HOME=$TORCH_HOME"
 echo "  HF_HOME=$HF_HOME"
 echo "  WANDB_DIR=$WANDB_DIR"
 
-# Clean up any existing .cache in home that might have been created before environment setup
-# This is defensive - environment variables should prevent new writes, but clean old ones
+# Aggressively clean up any existing .cache and .local in home BEFORE setup
+# Remove before environment variables are set to prevent any writes
 if [ -d "$HOME/.cache" ] && [ ! -L "$HOME/.cache" ]; then
-    echo "Warning: Found existing $HOME/.cache directory, attempting to clean..."
-    # Try to remove, but don't fail if we can't (might be in use)
-    rm -rf "$HOME/.cache" 2>/dev/null && echo "  Removed $HOME/.cache" || echo "  Could not remove $HOME/.cache (may be in use)"
+    echo "Removing existing $HOME/.cache directory..."
+    rm -rf "$HOME/.cache" 2>/dev/null && echo "  ✓ Removed $HOME/.cache" || echo "  ✗ Could not remove $HOME/.cache (may be in use)"
+fi
+
+if [ -d "$HOME/.local" ] && [ ! -L "$HOME/.local" ]; then
+    echo "Removing existing $HOME/.local directory..."
+    rm -rf "$HOME/.local" 2>/dev/null && echo "  ✓ Removed $HOME/.local" || echo "  ✗ Could not remove $HOME/.local (may be in use)"
+fi
+
+# Create symlinks to redirect .local and .cache to local scratch (defensive measure)
+# This ensures even if something ignores environment variables, it still goes to scratch
+mkdir -p "$XDG_DATA_HOME" "$XDG_CACHE_HOME"
+if [ ! -e "$HOME/.local" ]; then
+    ln -sf "$XDG_DATA_HOME" "$HOME/.local" 2>/dev/null || echo "Could not create symlink for .local"
+fi
+if [ ! -e "$HOME/.cache" ]; then
+    ln -sf "$XDG_CACHE_HOME" "$HOME/.cache" 2>/dev/null || echo "Could not create symlink for .cache"
 fi
 """
     
@@ -236,8 +252,15 @@ fi
     script_content += f"""
 
 # Activate the Conda environment
+# Ensure conda also uses local scratch for its data
+export CONDA_PKGS_DIRS="$LOCAL_SCRATCH/.cache/conda/pkgs"
+mkdir -p "$CONDA_PKGS_DIRS"
 source ~/.bashrc
 conda activate {conda_env_value}
+
+# Force pip to use local scratch - set user install directory
+export PIP_USER_DIR="$LOCAL_SCRATCH/.local"
+mkdir -p "$PIP_USER_DIR"
 
 # ====================
 # Install Dependencies (like in Colab)
@@ -357,21 +380,41 @@ bash ./run_reprompting_unified.sh \\
 echo "CSV results saved to: $CSV_RESULTS_DIR/{subexp_config['results_dir']}/"
 echo "SLURM logs saved to: {experiment_results_dir}"
 
-# Final check: Ensure no cache was accidentally written to home directory
-echo "Checking for any cache files in home directory..."
+# Final check: Ensure no cache or .local was accidentally written to home directory
+echo "Checking for any cache or data files in home directory..."
 if [ -d "$HOME/.cache" ] && [ ! -L "$HOME/.cache" ]; then
     echo "ERROR: $HOME/.cache directory was created despite redirection!"
     echo "Attempting to remove it..."
-    rm -rf "$HOME/.cache" 2>/dev/null || echo "  Could not remove (may be locked)"
+    rm -rf "$HOME/.cache" 2>/dev/null && echo "  ✓ Removed $HOME/.cache" || echo "  ✗ Could not remove (may be locked)"
+fi
+
+if [ -d "$HOME/.local" ] && [ ! -L "$HOME/.local" ]; then
+    echo "ERROR: $HOME/.local directory was created despite redirection!"
+    echo "Attempting to remove it (this may free up significant space)..."
+    du -sh "$HOME/.local" 2>/dev/null || echo "  Could not check size"
+    rm -rf "$HOME/.local" 2>/dev/null && echo "  ✓ Removed $HOME/.local" || echo "  ✗ Could not remove (may be locked)"
 fi
 
 # Check for other common cache locations in home
 for cache_loc in "$HOME/.local/share" "$HOME/.config" "$HOME/.wandb" "$HOME/.huggingface"; do
     if [ -d "$cache_loc" ] && [ ! -L "$cache_loc" ]; then
         echo "Warning: Found cache directory $cache_loc in home, attempting cleanup..."
-        rm -rf "$cache_loc" 2>/dev/null || echo "  Could not remove"
+        rm -rf "$cache_loc" 2>/dev/null && echo "  ✓ Removed $cache_loc" || echo "  ✗ Could not remove"
     fi
 done
+
+# Verify symlinks are in place
+if [ ! -L "$HOME/.local" ] && [ -e "$HOME/.local" ]; then
+    echo "ERROR: $HOME/.local is not a symlink! This may cause space issues."
+elif [ -L "$HOME/.local" ]; then
+    echo "✓ $HOME/.local is correctly symlinked to local scratch"
+fi
+
+if [ ! -L "$HOME/.cache" ] && [ -e "$HOME/.cache" ]; then
+    echo "ERROR: $HOME/.cache is not a symlink! This may cause space issues."
+elif [ -L "$HOME/.cache" ]; then
+    echo "✓ $HOME/.cache is correctly symlinked to local scratch"
+fi
 
 # Clean up local scratch to save space (but keep models if they might be reused)
 echo "Cleaning up local scratch directory (keeping models)..."
