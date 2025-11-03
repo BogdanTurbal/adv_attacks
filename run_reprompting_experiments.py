@@ -149,11 +149,13 @@ mkdir -p $LOCAL_SCRATCH
 export LOCAL_SCRATCH_DIR="$LOCAL_SCRATCH"
 echo "Using local scratch directory: $LOCAL_SCRATCH"
 
-# Copy project to local scratch
+# Clone project from GitHub to local scratch (like in Colab)
 LOCAL_PROJECT_DIR="$LOCAL_SCRATCH/adv_attacks"
-echo "Copying project from $PROJECT_DIR to $LOCAL_PROJECT_DIR..."
-cp -r $PROJECT_DIR $LOCAL_PROJECT_DIR || {{ echo "Failed to copy project"; exit 1; }}
+echo "Cloning adv_attacks repository to $LOCAL_PROJECT_DIR..."
+rm -rf $LOCAL_PROJECT_DIR 2>/dev/null
+git clone https://github.com/BogdanTurbal/adv_attacks.git $LOCAL_PROJECT_DIR || {{ echo "Failed to clone repository"; exit 1; }}
 cd $LOCAL_PROJECT_DIR
+echo "Cloned repository, current directory: $(pwd)"
 
 # ====================
 # Environment Setup
@@ -244,7 +246,8 @@ echo "Installing dependencies..."
 echo "Using pip cache directory: $PIP_CACHE_DIR"
 
 echo "Installing pycopy-fcntl..."
-pip install --cache-dir "$PIP_CACHE_DIR" pycopy-fcntl --quiet || echo "Warning: pycopy-fcntl installation failed"
+# Try to install, but continue even if it fails (may not be needed)
+pip install --cache-dir "$PIP_CACHE_DIR" pycopy-fcntl --no-deps --no-build-isolation 2>/dev/null || echo "Skipping pycopy-fcntl (not critical)"
 
 echo "Installing reasoning_attacks requirements..."
 if [ -f "$LOCAL_PROJECT_DIR/reasoning_attacks/requirements.txt" ]; then
@@ -254,7 +257,18 @@ else
 fi
 
 echo "Installing strong_reject..."
-pip install --cache-dir "$PIP_CACHE_DIR" git+https://github.com/dsbowen/strong_reject.git@main --quiet || echo "Warning: strong_reject installation failed"
+# Install without checking dependencies or Python version requirements - just install it
+# Try normal install first
+if ! pip install --cache-dir "$PIP_CACHE_DIR" --no-deps --ignore-requires-python --no-build-isolation git+https://github.com/dsbowen/strong_reject.git@main 2>/dev/null; then
+    echo "Normal install failed, trying alternative method..."
+    # Try cloning and installing directly
+    cd "$LOCAL_SCRATCH" && \
+    rm -rf strong_reject 2>/dev/null && \
+    git clone --depth 1 https://github.com/dsbowen/strong_reject.git 2>/dev/null && \
+    cd strong_reject && \
+    pip install --cache-dir "$PIP_CACHE_DIR" --no-deps --ignore-requires-python --no-build-isolation -e . 2>/dev/null && \
+    cd "$LOCAL_PROJECT_DIR" || echo "Warning: strong_reject installation had issues, but continuing anyway"
+fi
 
 echo "Installing Adversarial-Reasoning requirements..."
 if [ -f "$LOCAL_PROJECT_DIR/Adversarial-Reasoning/requirements.txt" ]; then
