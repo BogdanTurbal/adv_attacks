@@ -360,7 +360,7 @@ def run_reprompting_attack(
         
         # Generate optimized prompts
         collections_opt = [gen_string_optimizer(init_prompt, final_feedback) for final_feedback in final_feedbacks]
-        convs_opt = [get_conv_attacker(attacker_name, goal, target, collection_opt) for collection_opt in collections_opt]
+        convs_opt = [get_conv_optimizer(attacker_name, goal, target, collection_opt) for collection_opt in collections_opt]
         #print_gpu_memory(f"[Iter {iter}: Before generating new prompts] ")
         if use_attacker_api:
             new_prompts = get_new_prompts(
