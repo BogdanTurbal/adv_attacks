@@ -250,56 +250,56 @@ def run_reprompting_attack(
             messages = [prompt] * batch_size
     else:
         # Use local attacker model for initial prompt generation
-    attacker_conv = get_conversation_template(attacker_name)
-    attacker_conv.sep2 = attacker_conv.sep2.strip()
-    attacker_conv.set_system_message(conv.system_message)
-    attacker_conv.append_message(attacker_conv.roles[0], prompt)
-    
-    # Generate batch of prompts
-    messages = []
-    attacker_inputs = attacker_tokenizer.apply_chat_template(
-        attacker_conv.to_openai_api_messages(), 
-        tokenize=False, 
-        add_generation_prompt=True
-    )
-    input_ids = attacker_tokenizer([attacker_inputs] * batch_size, return_tensors="pt", padding=True).to(device)
-    
-    with torch.no_grad():
-        outputs = attacker_model.generate(
-            **input_ids,
-            max_new_tokens=512,
-            temperature=1.0,
-            top_p=0.9,
-            do_sample=True,
-            pad_token_id=attacker_tokenizer.pad_token_id,
-            eos_token_id=attacker_tokenizer.eos_token_id
+        attacker_conv = get_conversation_template(attacker_name)
+        attacker_conv.sep2 = attacker_conv.sep2.strip()
+        attacker_conv.set_system_message(conv.system_message)
+        attacker_conv.append_message(attacker_conv.roles[0], prompt)
+        
+        # Generate batch of prompts
+        messages = []
+        attacker_inputs = attacker_tokenizer.apply_chat_template(
+            attacker_conv.to_openai_api_messages(), 
+            tokenize=False, 
+            add_generation_prompt=True
         )
-    
-    generated_texts = attacker_tokenizer.batch_decode(outputs, skip_special_tokens=False)
-    
-    # Extract prompt P from JSON responses (as per the notebook)
-    from strings import extract_strings
-    for text in tqdm(generated_texts, desc="Extracting initial prompts", leave=False):
-        # Use the extract_strings function from strings.py
-        extracted = extract_strings(text)
-        if extracted:
-            messages.append(extracted)
-        else:
-            # Fallback: extract manually
-            if '"Prompt P":' in text or '"Prompt P" :' in text:
-                try:
-                    if '"Prompt P":' in text:
-                        prompt_part = text.split('"Prompt P":')[1].strip()
-                    else:
-                        prompt_part = text.split('"Prompt P" :')[1].strip()
-                    prompt_part = prompt_part.strip('"').strip(',').strip('}').strip()
-                    messages.append(prompt_part)
-                except:
-                    messages.append(text)
-    
-    if not messages:
-        # Fallback: use original prompt
-        messages = [prompt] * batch_size
+        input_ids = attacker_tokenizer([attacker_inputs] * batch_size, return_tensors="pt", padding=True).to(device)
+        
+        with torch.no_grad():
+            outputs = attacker_model.generate(
+                **input_ids,
+                max_new_tokens=512,
+                temperature=1.0,
+                top_p=0.9,
+                do_sample=True,
+                pad_token_id=attacker_tokenizer.pad_token_id,
+                eos_token_id=attacker_tokenizer.eos_token_id
+            )
+        
+        generated_texts = attacker_tokenizer.batch_decode(outputs, skip_special_tokens=False)
+        
+        # Extract prompt P from JSON responses (as per the notebook)
+        from strings import extract_strings
+        for text in tqdm(generated_texts, desc="Extracting initial prompts", leave=False):
+            # Use the extract_strings function from strings.py
+            extracted = extract_strings(text)
+            if extracted:
+                messages.append(extracted)
+            else:
+                # Fallback: extract manually
+                if '"Prompt P":' in text or '"Prompt P" :' in text:
+                    try:
+                        if '"Prompt P":' in text:
+                            prompt_part = text.split('"Prompt P":')[1].strip()
+                        else:
+                            prompt_part = text.split('"Prompt P" :')[1].strip()
+                        prompt_part = prompt_part.strip('"').strip(',').strip('}').strip()
+                        messages.append(prompt_part)
+                    except:
+                        messages.append(text)
+        
+        if not messages:
+            # Fallback: use original prompt
+            messages = [prompt] * batch_size
     
     # Compute losses on target model
     #print_gpu_memory("[Before computing initial losses] ")
