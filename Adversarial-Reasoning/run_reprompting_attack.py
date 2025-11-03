@@ -15,6 +15,7 @@ from pathlib import Path
 import multiprocessing as mp
 import time
 from math import ceil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from tqdm import tqdm
 
@@ -198,6 +199,87 @@ def extract_target_from_response(response: str, default_target: str = "Sure") ->
     return target
 
 
+def generate_new_messages_for_prompt(
+    prompt_new: str,
+    attacker_name: str,
+    goal: str,
+    target: str,
+    batch_size: int,
+    use_attacker_api: bool,
+    attacker_api_model: str = None,
+    attacker_api_key: str = None,
+    attacker_api_base_url: str = None,
+    attacker_model=None,
+    attacker_tokenizer=None,
+    device: str = "cuda:0",
+    iter_num: int = 0
+):
+    """Generate new messages for a single prompt_new. Can be used for parallelization."""
+    conv = get_conv_attacker(attacker_name, goal, target, prompt_new)
+    
+    if use_attacker_api:
+        # Use API to generate new messages
+        new_messages = get_attacks_string_with_timeout(
+            attacker_api_model,
+            conv,
+            batch_size,
+            use_openrouter=True,
+            api_key=attacker_api_key,
+            base_url=attacker_api_base_url
+        )
+        if not new_messages:
+            new_messages = [prompt_new] * batch_size
+    else:
+        # Generate new messages using local attacker model
+        attacker_conv = get_conversation_template(attacker_name)
+        attacker_conv.sep2 = attacker_conv.sep2.strip()
+        attacker_conv.set_system_message(conv.system_message)
+        attacker_conv.append_message(attacker_conv.roles[0], prompt_new)
+        
+        attacker_inputs = attacker_tokenizer.apply_chat_template(
+            attacker_conv.to_openai_api_messages(),
+            tokenize=False,
+            add_generation_prompt=True
+        )
+        input_ids = attacker_tokenizer([attacker_inputs] * batch_size, return_tensors="pt", padding=True).to(device)
+        
+        with torch.no_grad():
+            outputs = attacker_model.generate(
+                **input_ids,
+                max_new_tokens=512,
+                temperature=1.0,
+                top_p=0.9,
+                do_sample=True,
+                pad_token_id=attacker_tokenizer.pad_token_id,
+                eos_token_id=attacker_tokenizer.eos_token_id
+            )
+        
+        generated_texts = attacker_tokenizer.batch_decode(outputs, skip_special_tokens=False)
+        new_messages = []
+        from strings import extract_strings
+        for text in generated_texts:
+            extracted = extract_strings(text)
+            if extracted:
+                new_messages.append(extracted)
+            else:
+                # Fallback
+                if '"Prompt P":' in text or '"Prompt P" :' in text:
+                    try:
+                        if '"Prompt P":' in text:
+                            prompt_part = text.split('"Prompt P":')[1].strip()
+                        else:
+                            prompt_part = text.split('"Prompt P" :')[1].strip()
+                        prompt_part = prompt_part.strip('"').strip(',').strip('}').strip()
+                        new_messages.append(prompt_part)
+                    except:
+                        new_messages.append(text)
+        
+        if not new_messages:
+            new_messages = [prompt_new] * batch_size
+    
+    return prompt_new, new_messages
+
+
 def run_reprompting_attack(
     goal: str,
     target: str,
@@ -374,74 +456,166 @@ def run_reprompting_attack(
             new_prompts = get_new_prompts_local(convs_opt, attacker_model, attacker_tokenizer, device)
         #print_gpu_memory(f"[Iter {iter}: After generating new prompts] ")
         
-        # Evaluate new prompts
-        for prompt_new in tqdm(new_prompts, desc=f"Iter {iter}: Evaluating new prompts", leave=False):
-            conv = get_conv_attacker(attacker_name, goal, target, prompt_new)
+        # Evaluate new prompts - parallelized version
+        # Step 1: Generate all new_messages in parallel
+        prompt_new_messages_map = {}  # Maps prompt_new -> list of new_messages
+        
+        if use_attacker_api:
+            # For API calls, use ThreadPoolExecutor to parallelize
+            with ThreadPoolExecutor(max_workers=min(len(new_prompts), 10)) as executor:
+                futures = {
+                    executor.submit(
+                        generate_new_messages_for_prompt,
+                        prompt_new,
+                        attacker_name,
+                        goal,
+                        target,
+                        batch_size,
+                        use_attacker_api,
+                        attacker_api_model,
+                        attacker_api_key,
+                        attacker_api_base_url,
+                        None,  # attacker_model
+                        None,  # attacker_tokenizer
+                        device,
+                        iter
+                    ): prompt_new
+                    for prompt_new in new_prompts
+                }
+                
+                for future in tqdm(as_completed(futures), total=len(futures), desc=f"Iter {iter}: Generating messages (parallel)"):
+                    try:
+                        prompt_new, new_messages = future.result()
+                        prompt_new_messages_map[prompt_new] = new_messages
+                    except Exception as e:
+                        prompt_new = futures[future]
+                        print(f"Error generating messages for prompt: {e}")
+                        prompt_new_messages_map[prompt_new] = [prompt_new] * batch_size
+        else:
+            # For local model, batch all prompts together for efficient generation
+            # Step 1: Prepare all input sequences
+            all_input_sequences = []
+            prompt_to_indices = {}  # Maps prompt_new -> (start_idx, end_idx) in the batched input
+            total_batch_size = len(new_prompts) * batch_size
             
-            if use_attacker_api:
-                # Use API to generate new messages
-                new_messages = get_attacks_string_with_timeout(
-                    attacker_api_model,
-                    conv,
-                    batch_size,
-                    use_openrouter=True,
-                    api_key=attacker_api_key,
-                    base_url=attacker_api_base_url
-                )
-                if not new_messages:
-                    new_messages = [prompt_new] * batch_size
-            else:
-                # Generate new messages using local attacker model
+            for idx, prompt_new in enumerate(new_prompts):
+                conv = get_conv_attacker(attacker_name, goal, target, prompt_new)
                 attacker_conv = get_conversation_template(attacker_name)
                 attacker_conv.sep2 = attacker_conv.sep2.strip()
                 attacker_conv.set_system_message(conv.system_message)
                 attacker_conv.append_message(attacker_conv.roles[0], prompt_new)
-            
+                
                 attacker_inputs = attacker_tokenizer.apply_chat_template(
-                attacker_conv.to_openai_api_messages(),
-                tokenize=False,
-                add_generation_prompt=True
+                    attacker_conv.to_openai_api_messages(),
+                    tokenize=False,
+                    add_generation_prompt=True
                 )
-                input_ids = attacker_tokenizer([attacker_inputs] * batch_size, return_tensors="pt", padding=True).to(device)
+                # Create batch_size copies for this prompt
+                all_input_sequences.extend([attacker_inputs] * batch_size)
+                
+                # Track indices: this prompt will generate batch_size outputs
+                start_idx = idx * batch_size
+                end_idx = start_idx + batch_size
+                prompt_to_indices[prompt_new] = (start_idx, end_idx)
             
+            # Step 2: Generate all sequences in one batch
+            try:
+                input_ids = attacker_tokenizer(all_input_sequences, return_tensors="pt", padding=True).to(device)
+                
                 with torch.no_grad():
                     outputs = attacker_model.generate(
-                    **input_ids,
-                    max_new_tokens=512,
-                    temperature=1.0,
-                    top_p=0.9,
-                    do_sample=True,
-                    pad_token_id=attacker_tokenizer.pad_token_id,
-                    eos_token_id=attacker_tokenizer.eos_token_id
-                )
-            
+                        **input_ids,
+                        max_new_tokens=512,
+                        temperature=1.0,
+                        top_p=0.9,
+                        do_sample=True,
+                        pad_token_id=attacker_tokenizer.pad_token_id,
+                        eos_token_id=attacker_tokenizer.eos_token_id
+                    )
+                
                 generated_texts = attacker_tokenizer.batch_decode(outputs, skip_special_tokens=False)
-                new_messages = []
+                
+                # Step 3: Extract messages and map back to prompts
                 from strings import extract_strings
-                for text in tqdm(generated_texts, desc=f"Iter {iter}: Extracting prompts from text", leave=False):
-                    extracted = extract_strings(text)
-                if extracted:
-                    new_messages.append(extracted)
-                else:
-                    # Fallback
-                    if '"Prompt P":' in text or '"Prompt P" :' in text:
-                        try:
-                            if '"Prompt P":' in text:
-                                prompt_part = text.split('"Prompt P":')[1].strip()
-                            else:
-                                prompt_part = text.split('"Prompt P" :')[1].strip()
-                            prompt_part = prompt_part.strip('"').strip(',').strip('}').strip()
-                            new_messages.append(prompt_part)
-                        except:
-                            new_messages.append(text)
+                
+                for prompt_new in tqdm(new_prompts, desc=f"Iter {iter}: Extracting messages from batch", leave=False):
+                    start_idx, end_idx = prompt_to_indices[prompt_new]
+                    prompt_generated_texts = generated_texts[start_idx:end_idx]
+                    
+                    new_messages = []
+                    for text in prompt_generated_texts:
+                        extracted = extract_strings(text)
+                        if extracted:
+                            new_messages.append(extracted)
+                        else:
+                            # Fallback
+                            if '"Prompt P":' in text or '"Prompt P" :' in text:
+                                try:
+                                    if '"Prompt P":' in text:
+                                        prompt_part = text.split('"Prompt P":')[1].strip()
+                                    else:
+                                        prompt_part = text.split('"Prompt P" :')[1].strip()
+                                    prompt_part = prompt_part.strip('"').strip(',').strip('}').strip()
+                                    new_messages.append(prompt_part)
+                                except:
+                                    new_messages.append(text)
+                    
+                    if not new_messages:
+                        new_messages = [prompt_new] * batch_size
+                    
+                    prompt_new_messages_map[prompt_new] = new_messages
+                    
+            except Exception as e:
+                print(f"Error in batched generation: {e}")
+                # Fallback to sequential if batch fails
+                for prompt_new in new_prompts:
+                    try:
+                        _, new_messages = generate_new_messages_for_prompt(
+                            prompt_new,
+                            attacker_name,
+                            goal,
+                            target,
+                            batch_size,
+                            use_attacker_api,
+                            None,  # attacker_api_model
+                            None,  # attacker_api_key
+                            None,  # attacker_api_base_url
+                            attacker_model,
+                            attacker_tokenizer,
+                            device,
+                            iter
+                        )
+                        prompt_new_messages_map[prompt_new] = new_messages
+                    except Exception as e2:
+                        print(f"Error generating messages for prompt: {e2}")
+                        prompt_new_messages_map[prompt_new] = [prompt_new] * batch_size
+        
+        # Step 2: Compute losses for all prompts in a single batched operation
+        # Collect all messages and their corresponding prompts
+        all_prompt_new_list = []
+        all_new_messages_list = []
+        
+        for prompt_new in new_prompts:
+            if prompt_new in prompt_new_messages_map:
+                all_prompt_new_list.append(prompt_new)
+                all_new_messages_list.extend(prompt_new_messages_map[prompt_new])
+        
+        # Compute losses in batches for efficiency
+        # We'll process all messages together, then split the results back
+        if all_new_messages_list:
+            #print_gpu_memory(f"[Iter {iter}: Before computing losses for all prompts] ")
+            all_losses, _ = get_losses(model, tokenizer, all_new_messages_list, target, "deepseek")
+            #print_gpu_memory(f"[Iter {iter}: After computing losses for all prompts] ")
             
-                if not new_messages:
-                    new_messages = [prompt_new] * batch_size
-            
-            #print_gpu_memory(f"[Iter {iter}: Before computing losses for new prompt] ")
-            losses_new, _ = get_losses(model, tokenizer, new_messages, target, "deepseek")
-            #print_gpu_memory(f"[Iter {iter}: After computing losses for new prompt] ")
-            prompt_class.add_prompt(prompt_new, losses_new, new_messages)
+            # Split losses back to each prompt_new
+            loss_idx = 0
+            for prompt_new in all_prompt_new_list:
+                if prompt_new in prompt_new_messages_map:
+                    new_messages = prompt_new_messages_map[prompt_new]
+                    num_messages = len(new_messages)
+                    losses_new = all_losses[loss_idx:loss_idx + num_messages]
+                    loss_idx += num_messages
+                    prompt_class.add_prompt(prompt_new, losses_new, new_messages)
     
     # Get final best prompt
     #print_gpu_memory("[After all iterations: Before final prompt selection] ")
@@ -494,7 +668,7 @@ def worker_init(gpu_id: int, target_model_name: str, attacker_model_name: str, a
         _worker_target_model, _worker_target_tokenizer = load_model_and_tokenizer(
             target_model_name,
             low_cpu_mem_usage=True,
-            cache_dir=os.environ.get("HF_HOME", "/scratch/gpfs/KOROLOVA/huggingface"),
+            cache_dir=os.environ.get("HF_HOME", "/u/bt4811/huggingface"),
             device=device,
             device_map=device  # Load entire model on this specific GPU
         )
@@ -511,7 +685,7 @@ def worker_init(gpu_id: int, target_model_name: str, attacker_model_name: str, a
             _worker_attacker_model, _worker_attacker_tokenizer = load_model_and_tokenizer(
                 attacker_model_name,
                 low_cpu_mem_usage=True,
-                cache_dir=os.environ.get("HF_HOME", "/scratch/gpfs/KOROLOVA/huggingface"),
+                cache_dir=os.environ.get("HF_HOME", "/u/bt4811/huggingface"),
                 device=device,
                 quantize=attacker_quantize,
                 quantization_bits=attacker_quantize_bits,
