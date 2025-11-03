@@ -474,9 +474,11 @@ def run_reprompting_attack(
     initial_loss_mean = torch.mean(losses).item()
     initial_loss_min = torch.min(losses).item()
     
-    # Track best loss across all iterations (starting with initial)
+    # Track best loss and corresponding prompt across all iterations (starting with initial)
     best_loss_overall = initial_loss_min
+    best_prompt_overall = messages[losses.argmin().item()] if len(messages) > 0 else prompt
     print(f"Initial loss: mean={initial_loss_mean:.4f}, min={initial_loss_min:.4f} (best so far: {best_loss_overall:.4f})")
+    print(f"Best attack prompt (initial): {best_prompt_overall[:200]}..." if len(best_prompt_overall) > 200 else f"Best attack prompt (initial): {best_prompt_overall}")
     
     # Main iteration loop
     iteration_losses = []  # Track losses at each iteration
@@ -489,9 +491,10 @@ def run_reprompting_attack(
         iter_loss_mean = torch.mean(losses).item()
         iter_loss_min = torch.min(losses).item()
         
-        # Update best loss overall
+        # Update best loss and prompt overall
         if iter_loss_min < best_loss_overall:
             best_loss_overall = iter_loss_min
+            best_prompt_overall = messages[losses.argmin().item()] if len(messages) > 0 else best_prompt_overall
         
         iteration_losses.append({
             'iteration': iter,
@@ -499,8 +502,9 @@ def run_reprompting_attack(
             'loss_min': iter_loss_min
         })
         
-        # Print current best loss for sanity check
+        # Print current best loss and prompt for sanity check
         print(f"Iter {iter}: loss_mean={iter_loss_mean:.4f}, loss_min={iter_loss_min:.4f}, best_loss_overall={best_loss_overall:.4f}")
+        print(f"  Best attack prompt so far: {best_prompt_overall[:200]}..." if len(best_prompt_overall) > 200 else f"  Best attack prompt so far: {best_prompt_overall}")
         
         # Get feedbacks
         #print_gpu_memory(f"[Iter {iter}: Before getting feedbacks] ")
@@ -802,11 +806,13 @@ def run_reprompting_attack(
     final_loss_mean = final_losses.mean().item() if len(final_losses) > 0 else float('inf')
     final_loss_min = final_losses.min().item() if len(final_losses) > 0 else float('inf')
     
-    # Update best loss if final is better
+    # Update best loss and prompt if final is better
     if final_loss_min < best_loss_overall:
         best_loss_overall = final_loss_min
+        best_prompt_overall = final_messages[final_losses.argmin().item()] if len(final_messages) > 0 else best_prompt_overall
     
     print(f"Final loss: mean={final_loss_mean:.4f}, min={final_loss_min:.4f}, best_loss_overall={best_loss_overall:.4f}")
+    print(f"Best attack prompt (final): {best_prompt_overall[:200]}..." if len(best_prompt_overall) > 200 else f"Best attack prompt (final): {best_prompt_overall}")
     
     return {
         'best_prompt': final_messages[final_losses.argsort()[0].item()] if len(final_messages) > 0 else "",
