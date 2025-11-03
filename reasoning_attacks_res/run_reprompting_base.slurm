@@ -34,6 +34,8 @@ mkdir -p /scratch/bt4811/adv_attacks/reasoning_attacks_res/reprompting_base
 # Change to project directory (usefatt)
 cd $PROJECT_DIR
 
+
+
 # ====================
 # Environment Setup
 # ====================

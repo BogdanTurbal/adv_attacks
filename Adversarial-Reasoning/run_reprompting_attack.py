@@ -545,49 +545,38 @@ def run_reprompting_attack(
         from strings import extract_strings
         
         if use_attacker_api:
-            # Batch all prompts together for efficient API calls
-            # Create conversations: for each prompt_new, create batch_size conversations
-            all_convs = []
-            prompt_to_indices = {}  # Maps prompt_new -> (start_idx, end_idx) in the batched results
+            # Use parallel individual API calls instead of batched (more reliable)
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            from utils import prompt_openrouter_batch
             
-            for idx, prompt_new in enumerate(new_prompts):
-                conv = get_conv_attacker(attacker_name, goal, target, prompt_new)
-                # Create batch_size copies of this conversation for diversity
-                all_convs.extend([conv] * batch_size)
-                
-                # Track indices: this prompt will generate batch_size outputs
-                start_idx = idx * batch_size
-                end_idx = start_idx + batch_size
-                prompt_to_indices[prompt_new] = (start_idx, end_idx)
-            
-            # Generate all messages in one batched call using prompt_openrouter_multi
-            from utils import prompt_openrouter_multi
-            
-            try:
-                if attacker_api_base_url is None:
-                    attacker_api_base_url = "https://openrouter.ai/api/v1"
-                
-                generated_texts = prompt_openrouter_multi(
-                    attacker_api_model,
-                    all_convs,
-                    api_key=attacker_api_key,
-                    base_url=attacker_api_base_url
-                )
-                
-                # Extract messages and group by prompt_new
-                for prompt_new in tqdm(new_prompts, desc=f"Iter {iter}: Extracting messages from batch", leave=False):
-                    start_idx, end_idx = prompt_to_indices[prompt_new]
-                    prompt_generated_texts = generated_texts[start_idx:end_idx]
+            def generate_messages_for_single_prompt(prompt_new):
+                """Generate messages for a single prompt using individual API calls."""
+                try:
+                    conv = get_conv_attacker(attacker_name, goal, target, prompt_new)
+                    
+                    if attacker_api_base_url is None:
+                        attacker_api_base_url_local = "https://openrouter.ai/api/v1"
+                    else:
+                        attacker_api_base_url_local = attacker_api_base_url
+                    
+                    # Use prompt_openrouter_batch which handles retries internally
+                    generated_texts = prompt_openrouter_batch(
+                        attacker_api_model,
+                        conv,
+                        batch_size,
+                        api_key=attacker_api_key,
+                        base_url=attacker_api_base_url_local
+                    )
                     
                     new_messages = []
-                    for text in prompt_generated_texts:
-                        if text:  # Skip empty responses
+                    for text in generated_texts:
+                        if text and text.strip():  # Only process non-empty responses
                             text = text.replace("\\", "")
                             extracted = extract_strings(text)
                             if extracted:
                                 new_messages.append(extracted)
                             else:
-                                # Fallback
+                                # Fallback parsing
                                 if '"Prompt P":' in text or '"Prompt P" :' in text:
                                     try:
                                         if '"Prompt P":' in text:
@@ -598,66 +587,59 @@ def run_reprompting_attack(
                                         new_messages.append(prompt_part)
                                     except:
                                         new_messages.append(text)
+                                else:
+                                    new_messages.append(text)
+                    
+                    # Ensure we have batch_size messages
+                    if len(new_messages) < batch_size:
+                        while len(new_messages) < batch_size:
+                            new_messages.append(prompt_new)
                     
                     if not new_messages:
                         new_messages = [prompt_new] * batch_size
                     
-                    prompt_new_messages_map[prompt_new] = new_messages
-                    
-            except Exception as e:
-                print(f"Error in batched API generation: {e}")
-                print("Falling back to individual multithreaded API calls...")
-                # Fallback: try individual API calls for each prompt (multithreaded)
-                from concurrent.futures import ThreadPoolExecutor, as_completed
-                
-                def generate_messages_for_single_prompt(prompt_new):
-                    """Generate messages for a single prompt using API."""
+                    return prompt_new, new_messages
+                except Exception as e2:
+                    print(f"Error generating messages for prompt '{prompt_new[:50]}...': {e2}")
+                    # Retry once more
                     try:
                         conv = get_conv_attacker(attacker_name, goal, target, prompt_new)
-                        # Use get_attacks_string to generate batch_size messages for this prompt
                         from strings import get_attacks_string_with_timeout
-                        new_messages = get_attacks_string_with_timeout(
+                        retry_messages = get_attacks_string_with_timeout(
                             attacker_api_model,
                             conv,
                             batch_size,
                             timeout=120,
-                            retries=3,
-                            wait=60,
+                            retries=2,
+                            wait=30,
                             use_openrouter=True,
                             api_key=attacker_api_key,
-                            base_url=attacker_api_base_url
+                            base_url=attacker_api_base_url_local
                         )
-                        if new_messages and len(new_messages) == batch_size:
-                            return prompt_new, new_messages
-                        else:
-                            # If we got fewer messages, pad with the prompt
-                            if new_messages:
-                                while len(new_messages) < batch_size:
-                                    new_messages.append(prompt_new)
-                            else:
-                                new_messages = [prompt_new] * batch_size
-                            return prompt_new, new_messages
+                        if retry_messages and len(retry_messages) >= batch_size:
+                            return prompt_new, retry_messages[:batch_size]
+                    except:
+                        pass
+                    return prompt_new, [prompt_new] * batch_size
+            
+            # Use ThreadPoolExecutor for parallel individual calls (more reliable than batched)
+            print(f"Generating messages for {len(new_prompts)} prompts using parallel individual API calls...")
+            with ThreadPoolExecutor(max_workers=min(len(new_prompts) * 2, 20)) as executor:
+                future_to_prompt = {
+                    executor.submit(generate_messages_for_single_prompt, prompt_new): prompt_new
+                    for prompt_new in new_prompts
+                }
+                
+                for future in tqdm(as_completed(future_to_prompt), total=len(new_prompts), desc=f"Iter {iter}: Generating messages"):
+                    try:
+                        prompt_new, new_messages = future.result()
+                        prompt_new_messages_map[prompt_new] = new_messages
                     except Exception as e2:
-                        print(f"Error generating messages for prompt '{prompt_new[:50]}...': {e2}")
-                        return prompt_new, [prompt_new] * batch_size
-                
-                # Use ThreadPoolExecutor for concurrent individual calls
-                with ThreadPoolExecutor(max_workers=min(len(new_prompts), 10)) as executor:
-                    future_to_prompt = {
-                        executor.submit(generate_messages_for_single_prompt, prompt_new): prompt_new
-                        for prompt_new in new_prompts
-                    }
-                    
-                    for future in as_completed(future_to_prompt):
-                        try:
-                            prompt_new, new_messages = future.result()
-                            prompt_new_messages_map[prompt_new] = new_messages
-                        except Exception as e2:
-                            prompt_new = future_to_prompt[future]
-                            print(f"Failed to get result for prompt '{prompt_new[:50]}...': {e2}")
-                            prompt_new_messages_map[prompt_new] = [prompt_new] * batch_size
-                
-                print(f"Completed fallback: generated messages for {len(prompt_new_messages_map)}/{len(new_prompts)} prompts")
+                        prompt_new = future_to_prompt[future]
+                        print(f"Failed to get result for prompt '{prompt_new[:50]}...': {e2}")
+                        prompt_new_messages_map[prompt_new] = [prompt_new] * batch_size
+            
+            print(f"Completed: generated messages for {len(prompt_new_messages_map)}/{len(new_prompts)} prompts")
         else:
             # For local model, batch all prompts together for efficient generation
             # Step 1: Prepare all input sequences

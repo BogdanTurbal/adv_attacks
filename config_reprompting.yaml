@@ -78,7 +78,7 @@ subexperiments:
       range_spec: "0.0:1.0"
     
     slurm:
-      time: "06:00:00"
+      time: "03:00:00"
       gres: "gpu:8"
       nodes: 1
       ntasks: 8

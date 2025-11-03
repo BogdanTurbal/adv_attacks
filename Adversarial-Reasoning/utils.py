@@ -118,7 +118,7 @@ def prompt_togetherai_batch(name, conv, batch):
                                     temperature= 1.0,
                                     top_p = 0.9)
     
-    responses = [output["choices"][0]["message"].content for output in outputs]
+    responses = [output["choices"][0]["message"]["content"] for output in outputs]
     
     return responses
 
@@ -128,7 +128,7 @@ def prompt_togetherai_multi(name, convs):
                                     temperature= 1.0,
                                     top_p = 0.9)
     
-    responses = [output["choices"][0]["message"].content for output in outputs]
+    responses = [output["choices"][0]["message"]["content"] for output in outputs]
     
     return responses
 
@@ -159,26 +159,66 @@ def prompt_openrouter_batch(model_name, conv, batch, api_key=None, base_url="htt
     
     messages = conv.to_openai_api_messages()
     responses = []
+    import time
     
     # Generate batch requests - OpenRouter supports batch requests
-    for _ in range(batch):
-        try:
-            completion = client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                temperature=1.0,
-                top_p=0.9,
-                extra_headers={
-                    "HTTP-Referer": "https://github.com",  # Optional but recommended
-                    "X-Title": "Adversarial Reasoning Attack",  # Optional
-                },
-            )
-            response_content = completion.choices[0].message.content
-            responses.append(response_content)
-        except Exception as e:
-            print(f"Error in OpenRouter API call: {e}")
-            # Retry or return partial results
-            responses.append("")  # Placeholder for failed request
+    for i in range(batch):
+        max_retries = 5
+        success = False
+        
+        for attempt in range(max_retries):
+            try:
+                completion = client.chat.completions.create(
+                    model=model_name,
+                    messages=messages,
+                    temperature=1.0,
+                    top_p=0.9,
+                    extra_headers={
+                        "HTTP-Referer": "https://github.com",  # Optional but recommended
+                        "X-Title": "Adversarial Reasoning Attack",  # Optional
+                    },
+                )
+                response_content = completion.choices[0].message.content
+                
+                if response_content and response_content.strip():
+                    responses.append(response_content)
+                    success = True
+                    break  # Success! Move to next request
+                else:
+                    print(f"Warning: Empty response for batch {i+1}/{batch} (attempt {attempt+1}/{max_retries})")
+                    
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    wait_time = min(2 ** attempt, 60)  # Exponential backoff, max 60s
+                    print(f"Error in OpenRouter API call for batch {i+1}/{batch} (attempt {attempt+1}/{max_retries}): {e}")
+                    print(f"Retrying in {wait_time} seconds...")
+                    time.sleep(wait_time)
+                else:
+                    print(f"Error in OpenRouter API call for batch {i+1}/{batch} (final attempt): {e}")
+        
+        if not success:
+            # Final attempt - don't give up!
+            print(f"CRITICAL: All retries failed for batch {i+1}/{batch}, making one more attempt...")
+            try:
+                completion = client.chat.completions.create(
+                    model=model_name,
+                    messages=messages,
+                    temperature=1.0,
+                    top_p=0.9,
+                    timeout=120,  # Longer timeout
+                    extra_headers={
+                        "HTTP-Referer": "https://github.com",
+                        "X-Title": "Adversarial Reasoning Attack",
+                    },
+                )
+                response_content = completion.choices[0].message.content
+                if response_content and response_content.strip():
+                    responses.append(response_content)
+                else:
+                    raise Exception("Got empty response on final attempt")
+            except Exception as final_e:
+                print(f"FAILED: Could not get response for batch {i+1}/{batch} after all attempts: {final_e}")
+                raise  # Raise to prevent returning empty strings
     
     return responses
 
@@ -211,25 +251,40 @@ def prompt_openrouter_multi(model_name, convs, api_key=None, base_url="https://o
         api_key=api_key,
     )
     
-    # Helper function to make a single API call
-    def make_api_call(conv):
+    # Helper function to make a single API call with retries
+    def make_api_call(conv, max_retries=5):
         messages = conv.to_openai_api_messages()
-        try:
-            completion = client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                temperature=1.0,
-                top_p=0.9,
-                extra_headers={
-                    "HTTP-Referer": "https://github.com",  # Optional but recommended
-                    "X-Title": "Adversarial Reasoning Attack",  # Optional
-                },
-            )
-            response_content = completion.choices[0].message.content
-            return response_content
-        except Exception as e:
-            print(f"Error in OpenRouter API call: {e}")
-            return ""  # Placeholder for failed request
+        import time
+        
+        for attempt in range(max_retries):
+            try:
+                completion = client.chat.completions.create(
+                    model=model_name,
+                    messages=messages,
+                    temperature=1.0,
+                    top_p=0.9,
+                    extra_headers={
+                        "HTTP-Referer": "https://github.com",  # Optional but recommended
+                        "X-Title": "Adversarial Reasoning Attack",  # Optional
+                    },
+                )
+                response_content = completion.choices[0].message.content
+                if response_content and response_content.strip():
+                    return response_content  # Success! Return actual response
+                else:
+                    print(f"Warning: Empty response from API (attempt {attempt+1}/{max_retries})")
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    wait_time = min(2 ** attempt, 60)  # Exponential backoff, max 60s
+                    print(f"Error in OpenRouter API call (attempt {attempt+1}/{max_retries}): {e}")
+                    print(f"Retrying in {wait_time} seconds...")
+                    time.sleep(wait_time)
+                else:
+                    print(f"Error in OpenRouter API call (final attempt): {e}")
+                    raise  # Re-raise on final attempt to let caller handle
+        
+        # Should never reach here, but just in case
+        raise Exception("Failed to get response after all retries")
     
     # Use ThreadPoolExecutor for batched concurrent API calls
     responses = [None] * len(convs)
@@ -245,10 +300,59 @@ def prompt_openrouter_multi(model_name, convs, api_key=None, base_url="https://o
         for future in as_completed(future_to_idx):
             idx = future_to_idx[future]
             try:
-                responses[idx] = future.result()
+                response = future.result()
+                if response and response.strip():
+                    responses[idx] = response
+                else:
+                    # Empty response - retry this one individually
+                    print(f"Empty response for conversation {idx}, retrying individually...")
+                    conv = convs[idx]
+                    # Retry with more attempts
+                    for retry_attempt in range(3):
+                        try:
+                            completion = client.chat.completions.create(
+                                model=model_name,
+                                messages=conv.to_openai_api_messages(),
+                                temperature=1.0,
+                                top_p=0.9,
+                                extra_headers={
+                                    "HTTP-Referer": "https://github.com",
+                                    "X-Title": "Adversarial Reasoning Attack",
+                                },
+                            )
+                            retry_response = completion.choices[0].message.content
+                            if retry_response and retry_response.strip():
+                                responses[idx] = retry_response
+                                break
+                        except Exception as e2:
+                            if retry_attempt < 2:
+                                time.sleep(2 ** retry_attempt)
+                            else:
+                                print(f"Failed to get response for conversation {idx} after retries: {e2}")
+                                raise
             except Exception as e:
                 print(f"Error getting result for conversation {idx}: {e}")
-                responses[idx] = ""  # Placeholder for failed request
+                # Final retry attempt
+                try:
+                    conv = convs[idx]
+                    completion = client.chat.completions.create(
+                        model=model_name,
+                        messages=conv.to_openai_api_messages(),
+                        temperature=1.0,
+                        top_p=0.9,
+                        extra_headers={
+                            "HTTP-Referer": "https://github.com",
+                            "X-Title": "Adversarial Reasoning Attack",
+                        },
+                    )
+                    final_response = completion.choices[0].message.content
+                    if final_response and final_response.strip():
+                        responses[idx] = final_response
+                    else:
+                        raise Exception("Got empty response on final retry")
+                except Exception as final_e:
+                    print(f"CRITICAL: Failed to get response for conversation {idx} after all attempts: {final_e}")
+                    raise  # Raise to let caller know this is critical
     
     return responses
 
