@@ -474,6 +474,10 @@ def run_reprompting_attack(
     initial_loss_mean = torch.mean(losses).item()
     initial_loss_min = torch.min(losses).item()
     
+    # Track best loss across all iterations (starting with initial)
+    best_loss_overall = initial_loss_min
+    print(f"Initial loss: mean={initial_loss_mean:.4f}, min={initial_loss_min:.4f} (best so far: {best_loss_overall:.4f})")
+    
     # Main iteration loop
     iteration_losses = []  # Track losses at each iteration
     for iter in tqdm(range(num_iters), desc="Main iterations", leave=False):
@@ -484,11 +488,19 @@ def run_reprompting_attack(
         # Log iteration losses
         iter_loss_mean = torch.mean(losses).item()
         iter_loss_min = torch.min(losses).item()
+        
+        # Update best loss overall
+        if iter_loss_min < best_loss_overall:
+            best_loss_overall = iter_loss_min
+        
         iteration_losses.append({
             'iteration': iter,
             'loss_mean': iter_loss_mean,
             'loss_min': iter_loss_min
         })
+        
+        # Print current best loss for sanity check
+        print(f"Iter {iter}: loss_mean={iter_loss_mean:.4f}, loss_min={iter_loss_min:.4f}, best_loss_overall={best_loss_overall:.4f}")
         
         # Get feedbacks
         #print_gpu_memory(f"[Iter {iter}: Before getting feedbacks] ")
@@ -624,7 +636,9 @@ def run_reprompting_attack(
             
             # Use ThreadPoolExecutor for parallel individual calls (more reliable than batched)
             print(f"Generating messages for {len(new_prompts)} prompts using parallel individual API calls...")
-            with ThreadPoolExecutor(max_workers=min(len(new_prompts) * 2, 20)) as executor:
+            executor = None
+            try:
+                executor = ThreadPoolExecutor(max_workers=min(len(new_prompts) * 2, 20))
                 future_to_prompt = {
                     executor.submit(generate_messages_for_single_prompt, prompt_new): prompt_new
                     for prompt_new in new_prompts
@@ -638,6 +652,15 @@ def run_reprompting_attack(
                         prompt_new = future_to_prompt[future]
                         print(f"Failed to get result for prompt '{prompt_new[:50]}...': {e2}")
                         prompt_new_messages_map[prompt_new] = [prompt_new] * batch_size
+            finally:
+                # Ensure executor is properly cleaned up to prevent semaphore leaks
+                if executor is not None:
+                    try:
+                        # Python 3.9+ supports cancel_futures parameter
+                        executor.shutdown(wait=True, cancel_futures=False)
+                    except TypeError:
+                        # Older Python versions don't have cancel_futures
+                        executor.shutdown(wait=True)
             
             print(f"Completed: generated messages for {len(prompt_new_messages_map)}/{len(new_prompts)} prompts")
         else:
@@ -778,6 +801,12 @@ def run_reprompting_attack(
     # Compute final losses
     final_loss_mean = final_losses.mean().item() if len(final_losses) > 0 else float('inf')
     final_loss_min = final_losses.min().item() if len(final_losses) > 0 else float('inf')
+    
+    # Update best loss if final is better
+    if final_loss_min < best_loss_overall:
+        best_loss_overall = final_loss_min
+    
+    print(f"Final loss: mean={final_loss_mean:.4f}, min={final_loss_min:.4f}, best_loss_overall={best_loss_overall:.4f}")
     
     return {
         'best_prompt': final_messages[final_losses.argsort()[0].item()] if len(final_messages) > 0 else "",
