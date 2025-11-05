@@ -148,21 +148,34 @@ def get_conv_target(name, message, target = None):
 
 
 def get_prompt_target(tokenizer, prompt, answer = None, system_prompt = None):
-    if answer is None:
-        if system_prompt is None:
-            input = [{"role": "user", "content": prompt}]
-        else:
-            input = [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}]
-            
-        return tokenizer.apply_chat_template(input, tokenize = False, add_generation_prompt= True)
+    # Validate inputs
+    if prompt is None or not isinstance(prompt, str):
+        raise ValueError(f"Invalid prompt: {prompt} (type: {type(prompt)})")
     
-    else:
-        if system_prompt is None:
-            input = [{"role": "user", "content": prompt}, {"role": "assistant", "content": answer}]
+    if answer is not None and not isinstance(answer, str):
+        raise ValueError(f"Invalid answer type: {answer} (type: {type(answer)}, expected str)")
+    
+    if system_prompt is not None and not isinstance(system_prompt, str):
+        raise ValueError(f"Invalid system_prompt: {system_prompt} (type: {type(system_prompt)})")
+    
+    try:
+        if answer is None:
+            if system_prompt is None:
+                input = [{"role": "user", "content": str(prompt)}]
+            else:
+                input = [{"role": "system", "content": str(system_prompt)}, {"role": "user", "content": str(prompt)}]
+                
+            return tokenizer.apply_chat_template(input, tokenize = False, add_generation_prompt= True)
+        
         else:
-            input = [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}, {"role": "assistant", "content": answer}]
+            if system_prompt is None:
+                input = [{"role": "user", "content": str(prompt)}, {"role": "assistant", "content": str(answer)}]
+            else:
+                input = [{"role": "system", "content": str(system_prompt)}, {"role": "user", "content": str(prompt)}, {"role": "assistant", "content": str(answer)}]
 
-        return tokenizer.apply_chat_template(input, tokenize = False, add_generation_prompt= False)
+            return tokenizer.apply_chat_template(input, tokenize = False, add_generation_prompt= False)
+    except Exception as e:
+        raise ValueError(f"Failed to apply chat template. prompt length: {len(str(prompt)) if prompt else 0}, answer length: {len(str(answer)) if answer else 0}, error: {e}")
 
 
 def get_conv_feedbacker(name, goal, target, collection, batch):

@@ -711,6 +711,16 @@ def get_losses(model, tokenizer, messages, target, model_name):
         losses: Tensor of losses for each message
         cen_losses: Centered losses (losses - mean)
     """
+    # Validate inputs
+    if not messages:
+        raise ValueError("messages list is empty")
+    
+    if target is None:
+        raise ValueError("target is None")
+    
+    if not isinstance(target, str):
+        raise ValueError(f"target must be a string, got {type(target)}: {target}")
+    
     with torch.no_grad():
         crit = nn.CrossEntropyLoss()
         losses = []
@@ -760,15 +770,62 @@ def get_losses(model, tokenizer, messages, target, model_name):
             think_token = "</think>"
             
             # Construct target with think token: think_token + target
-            target_with_think = think_token + "\n" + target
+            # If target already starts with the tag, don't duplicate it
+            if target.strip().startswith(think_token):
+                target_with_think = target
+            else:
+                target_with_think = think_token + "\n" + target
+            
+            # Filter out empty messages and validate inputs
+            valid_messages = [msg for msg in messages if msg and isinstance(msg, str) and msg.strip()]
+            if not valid_messages:
+                raise ValueError("No valid messages provided for loss computation")
+            
+            if not target_with_think or not isinstance(target_with_think, str):
+                raise ValueError(f"Invalid target_with_think: {target_with_think}")
             
             # Use same loss computation mechanism as llama-3/mistral
-            inputs = tokenizer([get_prompt_target(tokenizer, message, target_with_think) for message in messages], return_tensors="pt", padding= True, add_special_tokens=False).to(device = model.device)
-            batch_logits = model(input_ids= inputs.input_ids, attention_mask= inputs.attention_mask).logits
+            try:
+                prompt_targets = []
+                for msg in valid_messages:
+                    try:
+                        prompt_targets.append(get_prompt_target(tokenizer, msg, target_with_think))
+                    except Exception as e:
+                        print(f"Warning: Failed to create prompt_target for message (length: {len(msg) if msg else 0}): {str(e)}")
+                        # Fallback: use message only
+                        prompt_targets.append(get_prompt_target(tokenizer, msg))
+                
+                inputs = tokenizer(prompt_targets, return_tensors="pt", padding=True, add_special_tokens=False).to(device=model.device)
+                batch_logits = model(input_ids=inputs.input_ids, attention_mask=inputs.attention_mask).logits
+            except Exception as e:
+                print(f"Error in batch processing, trying individual messages: {e}")
+                # Fallback: process individually
+                losses = []
+                for msg in valid_messages:
+                    try:
+                        inputs = tokenizer([get_prompt_target(tokenizer, msg, target_with_think)], return_tensors="pt", padding=True, add_special_tokens=False).to(device=model.device)
+                        logits = model(input_ids=inputs.input_ids, attention_mask=inputs.attention_mask).logits[0]
+                        l1 = len(tokenizer(get_prompt_target(tokenizer, msg), return_tensors="pt", padding=True, add_special_tokens=False).input_ids.squeeze())
+                        l2 = len(tokenizer(get_prompt_target(tokenizer, msg, target_with_think), return_tensors="pt", padding=True, add_special_tokens=False).input_ids.squeeze())
+                        loss_logits = logits[-(l2-l1)-1:-2]
+                        loss = crit(loss_logits, inputs.input_ids[0][-(l2-l1):-1])
+                        losses.append(loss.detach())
+                    except Exception as e2:
+                        print(f"Warning: Failed to compute loss for individual message: {e2}")
+                        losses.append(torch.tensor(float('inf'), device=model.device))
+                
+                return torch.stack(losses), torch.stack(losses) - torch.mean(torch.stack(losses))
 
             for i, logits in enumerate(batch_logits):
-                l1= len(tokenizer(get_prompt_target(tokenizer, messages[i]), return_tensors="pt", padding= True,add_special_tokens=False).input_ids.squeeze())
-                l2= len(tokenizer(get_prompt_target(tokenizer, messages[i], target_with_think), return_tensors="pt", padding= True, add_special_tokens=False).input_ids.squeeze())
+                msg = valid_messages[i] if i < len(valid_messages) else messages[i] if i < len(messages) else ""
+                try:
+                    l1 = len(tokenizer(get_prompt_target(tokenizer, msg), return_tensors="pt", padding=True, add_special_tokens=False).input_ids.squeeze())
+                    l2 = len(tokenizer(get_prompt_target(tokenizer, msg, target_with_think), return_tensors="pt", padding=True, add_special_tokens=False).input_ids.squeeze())
+                except Exception as e:
+                    print(f"Warning: Failed to compute lengths for message {i}: {e}")
+                    # Use fallback lengths
+                    l1 = len(tokenizer(msg, return_tensors="pt", add_special_tokens=False).input_ids.squeeze())
+                    l2 = len(tokenizer(msg + target_with_think, return_tensors="pt", add_special_tokens=False).input_ids.squeeze())
                 
                 loss_logits = logits[-(l2-l1) -1: -2]
                 loss = crit(loss_logits, inputs.input_ids[i][-(l2-l1): -1])

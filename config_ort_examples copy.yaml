@@ -3,10 +3,10 @@
 
 global:
   netid: "bt4811"
-  scratch_dir: "/u/bt4811"
-  home_dir: "/u/bt4811/reasoning_attacks_res"
-  project_dir: "/scratch/bt4811/adv_attacks"
-  email: "bt4811@princeton.edu"
+  scratch_dir: "/scratch/gpfs/KOROLOVA"
+  home_dir: "/scratch/gpfs/KOROLOVA/bt4811/usefatt/reasoning_attacks_res"
+  project_dir: "/scratch/gpfs/KOROLOVA/bt4811/usefatt"
+  email: "bogdan.turbal.y@gmail.com"
   
   environment:
     conda_env: "reasoning_env"
@@ -61,16 +61,18 @@ subexperiments:
         verbose: true
       
       parallel:
-        num_jobs: 1
+        num_jobs: 4
         range_type: "percentage"
-        range_spec: "0.5:1.0"
+        range_spec: "0.8:1.0"
       
       slurm:
-        time: "03:00:00"
-        gres: "gpu:8"
+        time: "01:20:00"
+        gres: "gpu:4"
         nodes: 1
-        ntasks: 8
-        constraint: null 
+        ntasks: 4
+        cpus_per_task: 8
+        mem: "128G"
+        constraint: "gpu80"
       
       wandb_project: "orthogonalized_attacks"
 

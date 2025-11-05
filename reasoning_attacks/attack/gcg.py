@@ -121,6 +121,10 @@ class GCGConfig:
     schedule_exponent: float = 2.0  # For exponential schedule
     schedule_power: float = 2.0  # For power schedule
 
+    # Soft tokens attack parameters
+    use_soft_tokens: bool = False  # Enable soft tokens attack (optimize embeddings directly)
+    soft_tokens_lr: float = 0.01  # Learning rate for gradient descent on embeddings
+
 
 @dataclass
 class GCGResult:
@@ -139,32 +143,32 @@ class AttackBuffer:
         Args:
             size: Maximum number of elements to store in the buffer.
         """
-        self.buffer = []  # elements are (loss: float, optim_ids: Tensor)
+        self.buffer = []  # elements are (loss: float, optim_data: Tensor) - can be IDs or embeddings
         self.size = size
 
-    def add(self, loss: float, optim_ids: Tensor) -> None:
+    def add(self, loss: float, optim_data: Tensor) -> None:
         """
         Adds a new optimization result to the buffer.
         Args:
             loss: The loss value associated with the optimization result.
-            optim_ids: The optimized token IDs as a Tensor.
+            optim_data: The optimized token IDs or embeddings as a Tensor.
         """
         if self.size == 0:
-            self.buffer = [(loss, optim_ids)]
+            self.buffer = [(loss, optim_data)]
             return
 
         if len(self.buffer) < self.size:
-            self.buffer.append((loss, optim_ids))
+            self.buffer.append((loss, optim_data))
         else:
-            self.buffer[-1] = (loss, optim_ids)
+            self.buffer[-1] = (loss, optim_data)
 
         self.buffer.sort(key=lambda x: x[0])
 
     def get_best_ids(self) -> Tensor:
         """
-        Returns the optimized token IDs with the lowest loss.
+        Returns the optimized token IDs or embeddings with the lowest loss.
         Returns:
-            Tensor of optimized token IDs with the lowest loss.
+            Tensor of optimized token IDs or embeddings with the lowest loss.
         """
         return self.buffer[0][1]
 
@@ -182,15 +186,29 @@ class AttackBuffer:
         """
         return self.buffer[-1][0]
 
-    def log_buffer(self, tokenizer: transformers.PreTrainedTokenizer) -> None:
+    def log_buffer(self, tokenizer: transformers.PreTrainedTokenizer, embedding_layer: Optional[torch.nn.Embedding] = None) -> None:
         """
         Logs the contents of the buffer to the logger.
         Args:
             tokenizer: The tokenizer used to decode the optimized token IDs.
+            embedding_layer: Optional embedding layer for projecting embeddings to nearest tokens.
         """
         message = "buffer:"
-        for loss, ids in self.buffer:
-            optim_str = tokenizer.batch_decode(ids)[0]
+        for loss, data in self.buffer:
+            # Check if data is embeddings (3D tensor with last dim > 100) or token IDs
+            if data.dim() == 3 and data.shape[-1] > 100:  # Likely embeddings [batch, seq, embed_dim]
+                if embedding_layer is not None:
+                    # Project to nearest token embeddings
+                    embedding_weights = embedding_layer.weight.data
+                    distances = torch.cdist(data.squeeze(0), embedding_weights)
+                    nearest_token_ids = distances.argmin(dim=-1).unsqueeze(0)
+                    optim_str = tokenizer.batch_decode(nearest_token_ids)[0]
+                else:
+                    optim_str = "[embeddings - no projection available]"
+            else:
+                # Assume token IDs
+                optim_str = tokenizer.batch_decode(data)[0]
+            
             optim_str = optim_str.replace("\\", "\\\\")
             optim_str = optim_str.replace("\n", "\\n")
             message += f"\nloss: {loss}" + f" | string: {optim_str}"
@@ -1063,66 +1081,288 @@ class GCG:
         #         if buffer.size == 0 or current_loss < buffer.get_highest_loss():
         #             buffer.add(current_loss, optim_ids)
 
-            optim_ids: Tensor = buffer.get_best_ids()
-            optim_str: str = tokenizer.batch_decode(optim_ids)[0]
-            optim_strings.append(optim_str)
+        # Initialize the attack buffer
+        buffer: AttackBuffer = self.init_buffer()
+        optim_ids: Tensor = buffer.get_best_ids()
 
-            buffer.log_buffer(tokenizer)
-
-            # Log current optimization state to wandb
-            if self.using_wandb:
-                # Add loss metrics
-                best_loss = buffer.get_lowest_loss()
-                self.add_wandb_metric("loss", current_loss)
-                self.add_wandb_metric(
-                    "loss_delta", losses[-2] - current_loss if len(losses) > 1 else 0
-                )
-
-                # Add probe sampling metrics if using
-                if self.config.probe_sampling_config is not None and hasattr(
-                    self, "last_rank_correlation"
-                ):
-                    self.add_wandb_metric(
-                        "rank_correlation", self.last_rank_correlation
-                    )
-                    self.add_wandb_metric("alpha", (1 + self.last_rank_correlation) / 2)
-
-                # Log all metrics at once
-                self.log_wandb_metrics()
-
-                # Update summary with latest best string
-                best_string_value: str = tokenizer.batch_decode(buffer.get_best_ids())[0]
-                wandb.run.summary["best_string"] = best_string_value
-                wandb.run.summary["best_loss"] = best_loss
-
-                # Generate and log model response periodically
-                if step % config.example_generation_frequency == 0:
-                    full_prompt: str = self.config.prompt_string + " " + best_string_value
-
-                    response: str = self.generate_response(full_prompt)
-                    logger.debug(f"Generated response at step {step}: {response}")
-
-                    # Generate original response for comparison
-                    original_response: str = self.generate_response(self.config.prompt_string)
+        losses: list[float] = []
+        optim_strings: list[str] = []
+        
+        if config.use_soft_tokens:
+            # Soft tokens mode: optimize embeddings directly
+            optim_embeds: Tensor = buffer.get_best_ids()  # Actually embeddings now
+            
+            for step in tqdm(range(config.num_steps)):
+                self.step = step
+                
+                # Compute gradient w.r.t. embeddings
+                optim_embeds_grad: Tensor = self.compute_embedding_gradient(optim_embeds)
+                
+                with torch.no_grad():
+                    # Apply gradient descent update
+                    optim_embeds = optim_embeds - config.soft_tokens_lr * optim_embeds_grad
                     
-                    # Add comprehensive text logging to wandb summary
-                    wandb.run.summary["original_prompt"] = self.config.prompt_string
-                    wandb.run.summary["original_response"] = original_response
-                    wandb.run.summary["attack_text"] = best_string_value
-                    wandb.run.summary["modified_response"] = response
-                    wandb.run.summary["best_answer"] = response  # Keep for backward compatibility
+                    # Compute loss on updated embeddings
+                    if self.prefix_cache:
+                        input_embeds: Tensor = torch.cat(
+                            [
+                                optim_embeds,
+                                self.after_embeds,
+                                self.target_embeds,
+                            ],
+                            dim=1,
+                        )
+                    else:
+                        input_embeds: Tensor = torch.cat(
+                            [
+                                self.before_embeds,
+                                optim_embeds,
+                                self.after_embeds,
+                                self.target_embeds,
+                            ],
+                            dim=1,
+                        )
+                    
+                    # Compute loss (need to handle extended generation if needed)
+                    current_loss: float = find_executable_batch_size(
+                        self._compute_candidates_loss_original, 1
+                    )(input_embeds).item()
+                    
+                    # Update buffer
+                    losses.append(current_loss)
+                    # For soft tokens, we store embeddings in buffer
+                    if buffer.size == 0 or current_loss < buffer.get_highest_loss():
+                        buffer.add(current_loss, optim_embeds.clone())
+                    
+                    # Get best embeddings from buffer
+                    optim_embeds = buffer.get_best_ids()
+                    
+                    # Decode for logging (approximate - embeddings may not map to valid tokens)
+                    # Optionally project to nearest token embedding for visualization
+                    with torch.no_grad():
+                        # Find nearest token embeddings
+                        embedding_weights = self.embedding_layer.weight.data  # [vocab_size, embed_dim]
+                        distances = torch.cdist(
+                            optim_embeds.squeeze(0), embedding_weights
+                        )  # [num_tokens, vocab_size]
+                        nearest_token_ids = distances.argmin(dim=-1).unsqueeze(0)
+                        optim_str: str = tokenizer.batch_decode(nearest_token_ids)[0]
+                    
+                    optim_strings.append(optim_str)
+                    buffer.log_buffer(tokenizer, embedding_layer=self.embedding_layer)
+                    
+                    # Log to wandb
+                    if self.using_wandb:
+                        best_loss = buffer.get_lowest_loss()
+                        self.add_wandb_metric("loss", current_loss)
+                        self.add_wandb_metric(
+                            "loss_delta", losses[-2] - current_loss if len(losses) > 1 else 0
+                        )
+                        self.add_wandb_metric("embedding_norm", optim_embeds.norm().item())
+                        self.add_wandb_metric("gradient_norm", optim_embeds_grad.norm().item())
+                        self.log_wandb_metrics()
+                        
+                        if step % config.example_generation_frequency == 0:
+                            # Use nearest token projection for generation
+                            full_prompt: str = self.config.prompt_string + " " + optim_str if self.config.prompt_string else optim_str
+                            response: str = self.generate_response(full_prompt)
+                            logger.debug(f"Generated response at step {step}: {response}")
+                    
+                    if self.stop_flag:
+                        logger.info("Early stopping due to finding a perfect match.")
+                        if self.using_wandb:
+                            wandb.run.summary["early_stopped"] = True
+                        break
+                    
+                    # Cleanup
+                    del optim_embeds_grad, input_embeds, self.current_extended_embeds
+                    torch.cuda.empty_cache()
+        else:
+            # Original discrete token optimization code
+            for step in tqdm(range(config.num_steps)):
+                # --- Start of Memory Check ---
+                allocated_mem_start = torch.cuda.memory_allocated() / (1024**3)
+                reserved_mem_start = torch.cuda.memory_reserved() / (1024**3)
+                logger.info(f"\n--- Step {step} Start ---")
+                logger.info(f"GPU Memory -> Allocated: {allocated_mem_start:.4f} GB | Reserved: {reserved_mem_start:.4f} GB")
+                # ---------------------------
 
-            if self.stop_flag:
-                logger.info("Early stopping due to finding a perfect match.")
+                self.step = step  # Update step counter
+
+                # Compute the token gradient
+                optim_ids_onehot_grad: Tensor = self.compute_token_gradient(optim_ids)
+
+                with torch.no_grad():
+                    # Sample candidate token sequences based on the token gradient
+                    sampled_ids: Tensor = sample_ids_from_grad(
+                        optim_ids.squeeze(0),
+                        optim_ids_onehot_grad.squeeze(0),
+                        config.search_width,
+                        config.topk,
+                        config.n_replace,
+                        not_allowed_ids=self.not_allowed_ids,
+                    )
+
+                    if config.filter_ids:
+                        sampled_ids: Tensor = filter_ids(sampled_ids, tokenizer)
+
+                    new_search_width: int = sampled_ids.shape[0]
+
+                    # Store gradient statistics for wandb
+                    if self.using_wandb:
+                        self.add_wandb_metric("search_width", new_search_width)
+                        self.add_wandb_metric(
+                            "gradient_min", optim_ids_onehot_grad.min().item()
+                        )
+
+                    # Compute loss on all candidate sequences
+                    batch_size: int = (
+                        new_search_width if config.batch_size is None else config.batch_size
+                    )
+                    if self.prefix_cache:
+                        input_embeds: Tensor = torch.cat(
+                            [
+                                embedding_layer(sampled_ids),
+                                after_embeds.repeat(new_search_width, 1, 1),
+                                target_embeds.repeat(new_search_width, 1, 1),
+                            ],
+                            dim=1,
+                        )
+                    else:
+                        input_embeds: Tensor = torch.cat(
+                            [
+                                before_embeds.repeat(new_search_width, 1, 1),
+                                embedding_layer(sampled_ids),
+                                after_embeds.repeat(new_search_width, 1, 1),
+                                target_embeds.repeat(new_search_width, 1, 1),
+                            ],
+                            dim=1,
+                        )
+                    import time
+                    start_inference_time = time.time()
+
+                    logger.info(f"Batch Size: {batch_size}")
+                    allocated_mem_start = torch.cuda.memory_allocated() / (1024**3)
+                    reserved_mem_start = torch.cuda.memory_reserved() / (1024**3)
+                    logger.info(f"\n--------- Intermediate memory check for step {step} Start ---")
+                    logger.info(f"GPU Memory -> Allocated: {allocated_mem_start:.4f} GB | Reserved: {reserved_mem_start:.4f} GB")
+                # -------
+                    if self.config.probe_sampling_config is None:
+                        logger.info("Computing loss with original method")
+                        loss: Tensor = find_executable_batch_size(
+                            self._compute_candidates_loss_original, batch_size
+                        )(input_embeds)
+                        current_loss: float = loss.min().item()
+                        optim_ids: Tensor = sampled_ids[loss.argmin()].unsqueeze(0)
+                    else:
+                        logger.info("Computing loss with probe sampling method")
+                        current_loss: float
+                        optim_ids: Tensor
+                        current_loss, optim_ids = find_executable_batch_size(
+                            self._compute_candidates_loss_probe_sampling, batch_size
+                        )(
+                            input_embeds,
+                            sampled_ids,
+                        )
+                    logger.info(f"\n Time took for prediction {time.time() - start_inference_time}s \n")
+                    
+                    allocated_mem_start = torch.cuda.memory_allocated() / (1024**3)
+                    reserved_mem_start = torch.cuda.memory_reserved() / (1024**3)
+                    logger.info(f"\n--------- Intermediate memory check for step {step} Finish ---")
+                    logger.info(f"GPU Memory -> Allocated: {allocated_mem_start:.4f} GB | Reserved: {reserved_mem_start:.4f} GB")
+  
+  
+                    # Update the buffer based on the loss
+                    losses.append(current_loss)
+                    if buffer.size == 0 or current_loss < buffer.get_highest_loss():
+                        buffer.add(current_loss, optim_ids)
+
+                    # --- End of Memory Check ---
+                    allocated_mem_end = torch.cuda.memory_allocated() / (1024**3)
+                    reserved_mem_end = torch.cuda.memory_reserved() / (1024**3)
+                    logger.info(f"--- Step {step} End ---")
+                    logger.info(f"GPU Memory -> Allocated: {allocated_mem_end:.4f} GB | Reserved: {reserved_mem_end:.4f} GB")
+                    # -------------------------
+                
+                gc.collect()
+                if step % 1 == 0:
+                    del optim_ids_onehot_grad, sampled_ids, input_embeds, self.current_extended_embeds
+                    if 'loss' in locals():
+                        del loss
+                        
+                    torch.cuda.empty_cache()
+                
+                optim_ids: Tensor = buffer.get_best_ids()
+                optim_str: str = tokenizer.batch_decode(optim_ids)[0]
+                optim_strings.append(optim_str)
+
+                buffer.log_buffer(tokenizer)
+
+                # Log current optimization state to wandb
                 if self.using_wandb:
-                    wandb.run.summary["early_stopped"] = True
-                break
+                    # Add loss metrics
+                    best_loss = buffer.get_lowest_loss()
+                    self.add_wandb_metric("loss", current_loss)
+                    self.add_wandb_metric(
+                        "loss_delta", losses[-2] - current_loss if len(losses) > 1 else 0
+                    )
+
+                    # Add probe sampling metrics if using
+                    if self.config.probe_sampling_config is not None and hasattr(
+                        self, "last_rank_correlation"
+                    ):
+                        self.add_wandb_metric(
+                            "rank_correlation", self.last_rank_correlation
+                        )
+                        self.add_wandb_metric("alpha", (1 + self.last_rank_correlation) / 2)
+
+                    # Log all metrics at once
+                    self.log_wandb_metrics()
+
+                    # Update summary with latest best string
+                    best_string_value: str = tokenizer.batch_decode(buffer.get_best_ids())[0]
+                    wandb.run.summary["best_string"] = best_string_value
+                    wandb.run.summary["best_loss"] = best_loss
+
+                    # Generate and log model response periodically
+                    if step % config.example_generation_frequency == 0:
+                        full_prompt: str = self.config.prompt_string + " " + best_string_value if self.config.prompt_string else best_string_value
+
+                        response: str = self.generate_response(full_prompt)
+                        logger.debug(f"Generated response at step {step}: {response}")
+
+                        # Generate original response for comparison
+                        original_response: str = self.generate_response(self.config.prompt_string) if self.config.prompt_string else ""
+                        
+                        # Add comprehensive text logging to wandb summary
+                        wandb.run.summary["original_prompt"] = self.config.prompt_string
+                        wandb.run.summary["original_response"] = original_response
+                        wandb.run.summary["attack_text"] = best_string_value
+                        wandb.run.summary["modified_response"] = response
+                        wandb.run.summary["best_answer"] = response  # Keep for backward compatibility
+
+                if self.stop_flag:
+                    logger.info("Early stopping due to finding a perfect match.")
+                    if self.using_wandb:
+                        wandb.run.summary["early_stopped"] = True
+                    break
+
+        # Get final best result
+        if config.use_soft_tokens:
+            # For soft tokens, project to nearest tokens for final result
+            with torch.no_grad():
+                optim_embeds_final = buffer.get_best_ids()
+                embedding_weights = self.embedding_layer.weight.data
+                distances = torch.cdist(optim_embeds_final.squeeze(0), embedding_weights)
+                nearest_token_ids = distances.argmin(dim=-1).unsqueeze(0)
+                best_string_value: str = tokenizer.batch_decode(nearest_token_ids)[0]
+        else:
+            best_string_value: str = tokenizer.batch_decode(buffer.get_best_ids())[0]
 
         min_loss_index: int = losses.index(min(losses))
 
         # Generate response and log to wandb
-        best_string_value: str = tokenizer.batch_decode(buffer.get_best_ids())[0]
-        full_prompt: str = self.config.prompt_string + " " + best_string_value
+        full_prompt: str = self.config.prompt_string + " " + best_string_value if self.config.prompt_string else best_string_value
         logger.info(full_prompt)
 
         response: str  = self.generate_response(full_prompt)
@@ -1151,10 +1391,10 @@ class GCG:
         return result
 
     def init_buffer(self) -> AttackBuffer:
-        """Initializes the attack buffer with initial token sequences.
+        """Initializes the attack buffer with initial token sequences or embeddings.
 
         Returns:
-            AttackBuffer: Initialized attack buffer with initial token sequences.
+            AttackBuffer: Initialized attack buffer with initial token sequences or embeddings.
         """
         model: transformers.PreTrainedModel = self.model
         tokenizer: transformers.PreTrainedTokenizer = self.tokenizer
@@ -1162,9 +1402,87 @@ class GCG:
 
         logger.info(f"Initializing attack buffer of size {config.buffer_size}...")
 
-        # Create the attack buffer and initialize the buffer ids
+        # Create the attack buffer
         buffer: AttackBuffer = AttackBuffer(config.buffer_size)
 
+        if config.use_soft_tokens:
+            # Initialize with embeddings directly
+            if isinstance(config.optim_str_init, str):
+                init_optim_ids: Tensor = tokenizer(
+                    config.optim_str_init, add_special_tokens=False, return_tensors="pt"
+                )["input_ids"].to(model.device)
+                # Start from token embeddings, then allow gradient updates
+                init_optim_embeds: Tensor = self.embedding_layer(init_optim_ids).clone()
+                init_optim_embeds.requires_grad_(False)  # Will be set to True during optimization
+                
+                if config.buffer_size > 1:
+                    # Create multiple initializations
+                    init_buffer_embeds_list = [init_optim_embeds]
+                    init_buffer_ids = (
+                        tokenizer(
+                            INIT_CHARS, add_special_tokens=False, return_tensors="pt"
+                        )["input_ids"]
+                        .squeeze()
+                        .to(model.device)
+                    )
+                    init_indices: Tensor = torch.randint(
+                        0,
+                        init_buffer_ids.shape[0],
+                        (config.buffer_size - 1, init_optim_ids.shape[1]),
+                    )
+                    for idx_row in init_indices:
+                        additional_embeds = self.embedding_layer(
+                            init_buffer_ids[idx_row].unsqueeze(0)
+                        ).clone()
+                        additional_embeds.requires_grad_(False)
+                        init_buffer_embeds_list.append(additional_embeds)
+                    init_buffer_embeds = torch.cat(init_buffer_embeds_list, dim=0)
+                else:
+                    init_buffer_embeds = init_optim_embeds
+                    
+            else:  # list of strings
+                init_buffer_ids: Tensor = tokenizer(
+                    config.optim_str_init, add_special_tokens=False, return_tensors="pt"
+                )["input_ids"].to(model.device)
+                init_buffer_embeds: Tensor = self.embedding_layer(init_buffer_ids).clone()
+                init_buffer_embeds.requires_grad_(False)
+
+            true_buffer_size = init_buffer_embeds.shape[0]
+
+            # Compute initial loss
+            if self.prefix_cache:
+                init_buffer_input_embeds: Tensor = torch.cat(
+                    [
+                        init_buffer_embeds,
+                        self.after_embeds.repeat(true_buffer_size, 1, 1),
+                        self.target_embeds.repeat(true_buffer_size, 1, 1),
+                    ],
+                    dim=1,
+                )
+            else:
+                init_buffer_input_embeds: Tensor = torch.cat(
+                    [
+                        self.before_embeds.repeat(true_buffer_size, 1, 1),
+                        init_buffer_embeds,
+                        self.after_embeds.repeat(true_buffer_size, 1, 1),
+                        self.target_embeds.repeat(true_buffer_size, 1, 1),
+                    ],
+                    dim=1,
+                )
+
+            init_buffer_losses: Tensor = find_executable_batch_size(
+                self._compute_candidates_loss_original, true_buffer_size
+            )(init_buffer_input_embeds)
+
+            # Populate buffer with embeddings
+            for i in range(true_buffer_size):
+                buffer.add(init_buffer_losses[i], init_buffer_embeds[[i]])
+
+            buffer.log_buffer(tokenizer, embedding_layer=self.embedding_layer)
+            logger.info("Initialized attack buffer with soft tokens (embeddings).")
+            return buffer
+
+        # Original discrete token initialization
         if isinstance(config.optim_str_init, str):
             init_optim_ids: Tensor = tokenizer(
                 config.optim_str_init, add_special_tokens=False, return_tensors="pt"
@@ -1386,6 +1704,131 @@ class GCG:
         )[0]
 
         return optim_ids_onehot_grad
+
+    def compute_embedding_gradient(self, optim_embeds: Tensor) -> Tensor:
+        """Computes the gradient of the GCG loss w.r.t. the embedding vectors.
+        
+        Args:
+            optim_embeds: Tensor of shape [1, num_optim_tokens, embed_dim] containing 
+                         the embedding vectors to optimize.
+        
+        Returns:
+            Tensor: Gradient of the GCG loss w.r.t. the embedding vectors.
+        """
+        model: transformers.PreTrainedModel = self.model
+        embedding_layer: torch.nn.Embedding = self.embedding_layer
+
+        # Clear previous activations
+        self.layer_activations = {}
+
+        # Ensure embeddings require gradients
+        optim_embeds = optim_embeds.clone()
+        optim_embeds.requires_grad_(True)
+
+        # Calculate how many additional tokens we need beyond target for refusal calculation
+        target_length: int = self.target_ids.shape[1]
+        additional_tokens_needed: int = max(
+            0, self.config.refusal_num_tokens - target_length
+        )
+
+        if self.prefix_cache:
+            input_embeds: Tensor = torch.cat(
+                [optim_embeds, self.after_embeds, self.target_embeds], dim=1
+            )
+
+            # Generate additional tokens if needed for refusal calculation
+            if self.config.use_refusal_direction and additional_tokens_needed > 0:
+                output: Tensor = model(
+                    inputs_embeds=input_embeds,
+                    past_key_values=self.prefix_cache,
+                    use_cache=True,
+                )
+
+                extended_embeds: Tensor = input_embeds.clone()
+                current_kv_cache: Tensor = output.past_key_values
+
+                for _ in range(additional_tokens_needed):
+                    last_logits: Tensor = output.logits[:, -1:, :]
+                    next_token_id: Tensor = torch.argmax(last_logits, dim=-1)
+                    next_token_embed: Tensor = embedding_layer(next_token_id)
+                    extended_embeds: Tensor = torch.cat(
+                        [extended_embeds, next_token_embed], dim=1
+                    )
+
+                    output: Tensor = model(
+                        inputs_embeds=next_token_embed,
+                        past_key_values=current_kv_cache,
+                        use_cache=True,
+                    )
+                    current_kv_cache: Tensor = output.past_key_values
+
+                final_output: Tensor = model(
+                    inputs_embeds=extended_embeds,
+                    past_key_values=self.prefix_cache,
+                    use_cache=True,
+                )
+                self.current_extended_embeds = extended_embeds
+                del current_kv_cache
+                torch.cuda.empty_cache()
+            else:
+                final_output: Tensor = model(
+                    inputs_embeds=input_embeds,
+                    past_key_values=self.prefix_cache,
+                    use_cache=True,
+                )
+                self.current_extended_embeds = input_embeds
+        else:
+            input_embeds: Tensor = torch.cat(
+                [
+                    self.before_embeds,
+                    optim_embeds,
+                    self.after_embeds,
+                    self.target_embeds,
+                ],
+                dim=1,
+            )
+
+            # Generate additional tokens if needed for refusal calculation
+            if self.config.use_refusal_direction and additional_tokens_needed > 0:
+                extended_embeds: Tensor = input_embeds.clone()
+
+                for _ in range(additional_tokens_needed):
+                    output: Tensor = model(inputs_embeds=extended_embeds)
+                    last_logits: Tensor = output.logits[:, -1:, :]
+                    next_token_id: Tensor = torch.argmax(last_logits, dim=-1)
+                    next_token_embed: Tensor = embedding_layer(next_token_id)
+                    extended_embeds: Tensor = torch.cat(
+                        [extended_embeds, next_token_embed], dim=1
+                    )
+
+                final_output: Tensor = model(inputs_embeds=extended_embeds)
+                self.current_extended_embeds = extended_embeds
+            else:
+                final_output: Tensor = model(inputs_embeds=input_embeds)
+                self.current_extended_embeds = input_embeds
+
+        logits: Tensor = final_output.logits
+
+        # Token forcing loss calculation
+        original_input_length: int = input_embeds.shape[1]
+        shift: int = original_input_length - self.target_ids.shape[1]
+
+        shift_logits: Tensor = logits[
+            ..., shift - 1 : shift - 1 + self.target_ids.shape[1], :
+        ].contiguous()
+        shift_labels: Tensor = self.target_ids
+
+        # Compute loss with refusal direction
+        loss: Tensor = self.compute_loss_with_refusal_direction(
+            shift_logits, shift_labels, self.current_extended_embeds
+        )
+
+        # Compute gradient w.r.t. embeddings directly
+        optim_embeds_grad: Tensor = torch.autograd.grad(
+            outputs=[loss], inputs=[optim_embeds]
+        )[0]
+
+        return optim_embeds_grad
 
     # def _compute_candidates_loss_original(
     #     self, search_batch_size: int, input_embeds: Tensor
